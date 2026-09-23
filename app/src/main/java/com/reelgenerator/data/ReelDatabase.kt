@@ -62,6 +62,15 @@ data class GeneratedReelSegment(val reelId: String, val position: Int, val sourc
 @Entity
 data class AppSettings(@PrimaryKey val id: Int = 1, val category: String = "TRAVEL", val humor: String = "AUTO")
 
+@Entity(indices = [Index("normalizedText", unique = true), Index("category")])
+data class GeneratedTextHistory(@PrimaryKey val id: String, val category: String, val subTheme: String, val fullText: String, val normalizedText: String, val exactHash: String, val reelId: String, val createdAt: Long = System.currentTimeMillis(), val lastUsedAt: Long = createdAt, val usageCount: Int = 1)
+
+@Entity(primaryKeys = ["category", "concept"], indices = [Index("lastUsedAt")])
+data class ConceptHistory(val category: String, val concept: String, val emotionalAngle: String, val hookType: String, val lastUsedAt: Long = System.currentTimeMillis(), val useCount: Int = 1)
+
+@Entity(primaryKeys = ["sourceUri", "normalizedText", "sourceStartMs", "sourceEndMs"])
+data class ReelPairingHistory(val sourceUri: String, val normalizedText: String, val sourceStartMs: Long, val sourceEndMs: Long, val concept: String, val reelId: String, val createdAt: Long = System.currentTimeMillis())
+
 @Dao
 abstract class ReelDao {
     @Query("SELECT * FROM SourceFolder ORDER BY name") abstract fun observeFolders(): Flow<List<SourceFolder>>
@@ -84,6 +93,10 @@ abstract class ReelDao {
     }
     @Query("SELECT v.* FROM SourceVideo v JOIN FolderVideo l ON l.videoUri=v.uri JOIN SourceFolder f ON f.uri=l.folderUri WHERE f.enabled=1 AND f.error IS NULL GROUP BY v.documentKey ORDER BY v.useCount, v.lastUsed, v.uri")
     abstract suspend fun candidates(): List<SourceVideo>
+    @Query("SELECT COUNT(*) > 0 FROM GeneratedTextHistory WHERE normalizedText=:normalized") abstract suspend fun textUsed(normalized: String): Boolean
+    @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordText(history: GeneratedTextHistory)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordConcept(history: ConceptHistory)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordPairing(history: ReelPairingHistory)
     @Query("SELECT * FROM AppSettings WHERE id=1") abstract suspend fun settings(): AppSettings?
     @Upsert abstract suspend fun saveSettings(settings: AppSettings)
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun addBatch(batch: Batch)
@@ -110,11 +123,14 @@ abstract class ReelDao {
         if (!alreadySaved) {
             val sources = segments(reel.id).map { it.sourceUri }.ifEmpty { listOf(reel.sourceUri) }.distinct()
             sources.forEach { used(it, System.currentTimeMillis()) }
+            val normalized = reel.caption.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
+            if (normalized.isNotEmpty()) recordText(GeneratedTextHistory(reel.id, "unknown", "unknown", reel.caption, normalized, normalized.hashCode().toString(), reel.id))
+            segments(reel.id).forEach { segment -> recordPairing(ReelPairingHistory(segment.sourceUri, normalized, segment.trimStartMs, segment.trimEndMs, "unknown", reel.id)) }
         }
     }
 }
 
-@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class], version = 2, exportSchema = true)
+@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class, GeneratedTextHistory::class, ConceptHistory::class, ReelPairingHistory::class], version = 3, exportSchema = true)
 abstract class ReelDatabase : RoomDatabase() {
     abstract fun dao(): ReelDao
     companion object {
@@ -125,10 +141,20 @@ abstract class ReelDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_GeneratedReelSegment_sourceUri ON GeneratedReelSegment(sourceUri)")
             }
         }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS GeneratedTextHistory (id TEXT NOT NULL PRIMARY KEY, category TEXT NOT NULL, subTheme TEXT NOT NULL, fullText TEXT NOT NULL, normalizedText TEXT NOT NULL, exactHash TEXT NOT NULL, reelId TEXT NOT NULL, createdAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL, usageCount INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_GeneratedTextHistory_normalizedText ON GeneratedTextHistory(normalizedText)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_GeneratedTextHistory_category ON GeneratedTextHistory(category)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS ConceptHistory (category TEXT NOT NULL, concept TEXT NOT NULL, emotionalAngle TEXT NOT NULL, hookType TEXT NOT NULL, lastUsedAt INTEGER NOT NULL, useCount INTEGER NOT NULL, PRIMARY KEY(category, concept))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_ConceptHistory_lastUsedAt ON ConceptHistory(lastUsedAt)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS ReelPairingHistory (sourceUri TEXT NOT NULL, normalizedText TEXT NOT NULL, sourceStartMs INTEGER NOT NULL, sourceEndMs INTEGER NOT NULL, concept TEXT NOT NULL, reelId TEXT NOT NULL, createdAt INTEGER NOT NULL, PRIMARY KEY(sourceUri, normalizedText, sourceStartMs, sourceEndMs))")
+            }
+        }
         @Volatile private var instance: ReelDatabase? = null
         fun get(context: Context): ReelDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, ReelDatabase::class.java, "reelgenerator.db")
-                .addMigrations(MIGRATION_1_2).build().also { instance = it }
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
     }
 }
