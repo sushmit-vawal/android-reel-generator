@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.work.*
 import com.reelgenerator.data.*
+import com.reelgenerator.analysis.*
 import com.reelgenerator.planning.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -62,6 +63,10 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
             saved.forEach { countUsage(it) }
             val planner: ReelPlanner = LocalReelPlanner()
+            val frameProvider = CachedFrameAnalysisProvider(
+                LocalFrameAnalysisProvider(applicationContext),
+                FrameAnalysisCache(applicationContext)
+            )
             val outcome = runBatch(sources, previous, sourceUseCount = { usage[it] ?: 0 }) { slot, source ->
                 currentCoroutineContext().ensureActive()
                 if (dao.batch(batchId)?.status == "CANCELLED") throw CancellationException()
@@ -72,11 +77,19 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     captionOverride = old?.caption?.takeIf { old.planJson == null })
                 val recoveredPlan = old?.planJson?.let { json -> runCatching { ReelPlanCodec.decode(json) }.getOrNull() }
                     ?.takeIf { plan -> plan.clips.all { it.source.uri in sources } }
-                val plan = recoveredPlan ?: if (old != null && old.planJson == null) {
+                val planned = recoveredPlan ?: if (old != null && old.planJson == null) {
                     LocalReelPlanner.legacy(request.id, category, ordered.first(), old.caption)
                 } else try { planner.plan(request) } catch (error: IllegalArgumentException) {
                     planner.plan(request.copy(forceSingle = true, fallbackReason = error.localizedMessage ?: "Planning failed."))
                 }
+                val analysis = runCatching {
+                    withTimeout(10_000) {
+                        frameProvider.analyze(FrameAnalysisRequest(Uri.parse(ordered.first().uri), listOf(0L, ordered.first().durationMs / 2, ordered.first().durationMs - 1)))
+                    }
+                }.getOrNull()
+                val plan = planned.copy(metadata = planned.metadata.copy(
+                    notes = planned.metadata.notes + "frameAnalysis=${analysis?.provider ?: "unavailable"}; samples=${analysis?.samples?.size ?: 0}"
+                ))
                 suspend fun render(planToRender: ReelPlan): String {
                     val reel = GeneratedReel(planToRender.id, batchId, slot, planToRender.clips.first().source.uri,
                         planToRender.textBeats.joinToString("\n") { it.text }, planJson = ReelPlanCodec.encode(planToRender))
