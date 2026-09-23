@@ -29,7 +29,8 @@ class VisualPlanMatcher(private val policy: MatchPolicy = MatchPolicy()) {
         val relevantPairings = pairings.filter { it.concept == candidate.concept }.groupBy { it.sourceUri }
         val allOptions = intents.mapIndexed { index, intent ->
             val options = request.sources.flatMap { source -> analyses[source.uri]?.temporalSegments.orEmpty().mapNotNull { section ->
-                if (section.endMs - section.startMs < minOf(1800L, durations[index])) return@mapNotNull null
+                val requiredWindow = if (intents.size > 1) durations[index] else minOf(1800L, durations[index])
+                if (section.endMs - section.startMs < requiredWindow) return@mapNotNull null
                 val paired = relevantPairings[source.uri].orEmpty().any { it.sourceStartMs < section.endMs && it.sourceEndMs > section.startMs }
                 Option(source, section, VisualScorer.score(intent, section, (counts[source.uri] ?: 0) + (usage[source.uri] ?: 0) * 2, paired, policy))
             } }

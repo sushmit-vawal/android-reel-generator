@@ -74,6 +74,17 @@ class VisualMatchingTest {
         assertEquals(2, plan.clips.size); assertEquals(1, plan.textBeats.size)
         assertTrue(plan.clips.any { it.source.uri == b.uri && it.trimStartMs >= 21000 })
     }
+    @Test fun shortHighScoringWindowsCannotCrowdOutReadableAlternatives() {
+        val clips = (0..40).map(::clip)
+        val evidence = clips.associate { source -> source.uri to analysis(source, when (source.id) {
+            "39" -> section("work", confidence = .8)
+            "40" -> section("ocean")
+            else -> section("work", end = 2000, confidence = .99)
+        }) }
+        val candidate = TextCandidate(listOf("Work is where the long day begins", "The ocean is the reward"), "", "USER_CSV")
+        val plan = VisualPlanMatcher().match(request(clips), candidate, evidence, emptyList(), emptyMap(), emptyList(), mutableListOf())!!.plan
+        assertEquals(listOf("39", "40"), plan.clips.map { it.source.id })
+    }
     @Test fun laterLibraryRowsAndVideosBeyondFortyRemainEligible() = runTest {
         val clips = (0 until 550).map(::clip)
         val evidence = clips.associate { it.uri to analysis(it, section(if (it.id == "549") "ocean" else "work")) }
