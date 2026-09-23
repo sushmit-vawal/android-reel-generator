@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFBEF264), background = Color(0xFF101410), surface = Color(0xFF1C241C))) {
                 val model: ReelViewModel = viewModel()
                 var screen by rememberSaveable { mutableStateOf("home") }
+                var visibleContent by rememberSaveable { mutableIntStateOf(50) }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) model.addFolder(uri) }
                 val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) model.importContent(uri) }
                 val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.generate() }
@@ -98,12 +99,17 @@ class MainActivity : ComponentActivity() {
                                         TextButton(onClick = { model.deleteContentImport(imported.id) }, enabled = !model.busy) { Text("Delete import") }
                                     } }
                                 }
-                                model.contentItems.take(50).forEach { item ->
+                                Text("${model.contentItems.size} rows • ${model.contentItems.count { it.enabled && it.useCount == 0 }} enabled and not yet used")
+                                model.contentItems.take(visibleContent).forEach { item ->
                                     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text(item.rawText); Text("${item.category} • ${runCatching { org.json.JSONArray(item.beatsJson).length() }.getOrDefault(0)} beat(s) • used ${item.useCount} time(s)", style = MaterialTheme.typography.bodySmall)
+                                        val rowBeats = item.rawText.split("||").map(String::trim)
+                                        if (rowBeats.size > 6 || rowBeats.any { it.length > 180 } || rowBeats.sumOf { com.reelgenerator.planning.ReadingDuration.minimumMs(it) } + 700 > 20000)
+                                            Text("Too long for one reel. Split into shorter CSV rows or beats (||).", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Switch(item.enabled, { model.enableContent(item, it) }); Text(item.sourceType, style = MaterialTheme.typography.labelSmall) }
                                     } }
                                 }
+                                if (visibleContent < model.contentItems.size) TextButton(onClick = { visibleContent += 50 }) { Text("Show more rows") }
                             }
                             else -> {
                                 Text("Your videos. Five moments to share.", style = MaterialTheme.typography.bodyLarge)
@@ -129,7 +135,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 model.batch?.let { Text(it.message) }
                                 if (model.reels.isNotEmpty()) OutlinedButton(onClick = { screen = "reels" }, modifier = Modifier.fillMaxWidth()) { Text("View ${model.reels.size} Reels") }
-                                Text("Uses fresh matching library text and local fallback captions. No AI model is installed. Name footage descriptively to help local matching.", style = MaterialTheme.typography.bodySmall)
+                                Text("Matches your text to video content on this phone. New videos are explored across all enabled folders; the first batches may take longer. Imported wording stays unchanged. When needed, captions are chosen from footage-based templates.", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         if (model.loading || model.managing) LinearProgressIndicator(Modifier.fillMaxWidth())

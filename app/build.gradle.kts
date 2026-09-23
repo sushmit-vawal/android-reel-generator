@@ -11,8 +11,8 @@ android {
         applicationId = "com.reelgenerator"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0-a"
+        versionCode = 5
+        versionName = "0.3.1-visual"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
@@ -39,6 +39,7 @@ dependencies {
     implementation("androidx.room:room-ktx:2.7.2")
     ksp("androidx.room:room-compiler:2.7.2")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("org.robolectric:robolectric:4.14.1")

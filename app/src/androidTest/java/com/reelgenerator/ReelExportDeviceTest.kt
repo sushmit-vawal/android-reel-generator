@@ -38,14 +38,34 @@ class ReelExportDeviceTest {
     }
     @After fun removeTestGalleryEntries() { published.forEach { context.contentResolver.delete(it, null, null) } }
 
+    @Test fun bundledVisualModelAnalyzesMultipleFramesWithoutInternetPermission() = runBlocking {
+        assertEquals(android.content.pm.PackageManager.PERMISSION_DENIED,
+            context.checkSelfPermission(android.Manifest.permission.INTERNET))
+        val video = SourceVideo(red.uri, "fixture.mp4", 1, 1)
+        val analysis = com.reelgenerator.analysis.VisualClipAnalyzer(context).use { analyzer ->
+            withTimeout(90000) { analyzer.analyze(red, video) }
+        }
+        assertEquals(com.reelgenerator.analysis.VisualClipAnalyzer.MODEL, analysis.provider)
+        assertTrue(analysis.temporalSegments.isNotEmpty())
+        assertTrue(analysis.temporalSegments.last().endMs > red.durationMs * .8)
+        assertTrue(analysis.temporalSegments.all { it.startMs >= 0 && it.endMs <= red.durationMs })
+        assertEquals(analysis, com.reelgenerator.analysis.ClipAnalysisCodec.decode(com.reelgenerator.analysis.ClipAnalysisCodec.encode(analysis)))
+    }
+
     @Test fun importedCsvProducesPublishedReelAndUsageCheckpoint() = runBlocking {
         val db = Room.inMemoryDatabaseBuilder(context, ReelDatabase::class.java).build()
         try {
             val dao = db.dao()
-            ContentLibraryRepository(dao).importCsv("render.csv", "category,text\nTravel,\"FIRST || SECOND\"")
+            ContentLibraryRepository(dao).importCsv("render.csv", "category,text,tags\nTravel,\"FIRST || SECOND\",ocean")
+            // Synthetic color footage tests rendering/checkpoints, not image recognition accuracy.
+            val visual = com.reelgenerator.analysis.ClipAnalysis(red.uri, "test", "synthetic-test-evidence", listOf(
+                com.reelgenerator.analysis.ClipTemporalSegment(0, red.durationMs, listOf(com.reelgenerator.analysis.SemanticTag("ocean", .95)),
+                    com.reelgenerator.analysis.VibeProfile(.2, .1, .5, .3, "test", "ocean", "wide", .9), .9,
+                    com.reelgenerator.analysis.CropAssessment(.3, .8, .5))
+            ), .9)
             val plan = ContentCandidatePlanner().select(
                 PlanningRequest("csv_${UUID.randomUUID()}", ReelCategory.TRAVEL, HumorStyle.AUTO, 0, 8, listOf(red)),
-                dao.contentItems(), listOf(SourceVideo(red.uri, "fixture.mp4", 1, 1)), dao.completedCaptions(), emptyMap())
+                dao.contentItems(), listOf(SourceVideo(red.uri, "fixture.mp4", 1, 1)), dao.completedCaptions(), emptyMap(), mapOf(red.uri to visual))
             assertEquals(listOf("FIRST", "SECOND"), plan.textBeats.map { it.text })
             assertTrue(plan.metadata.notes.contains("textSource=USER_CSV"))
             dao.addBatch(Batch("csvbatch", "TRAVEL", "AUTO"))

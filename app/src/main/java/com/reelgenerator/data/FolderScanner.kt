@@ -5,7 +5,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import kotlinx.coroutines.*
 
-/** Uses document-provider metadata only. Visual/semantic analysis belongs to Phase 4. */
+/** Inventories document-provider metadata; the visual index performs cached frame analysis separately. */
 class FolderScanner(private val context: Context, private val dao: ReelDao) {
     suspend fun scanAll(progress: suspend (String) -> Unit = {}) = withContext(Dispatchers.IO) {
         dao.folders().filter { it.enabled }.forEach { folder ->
