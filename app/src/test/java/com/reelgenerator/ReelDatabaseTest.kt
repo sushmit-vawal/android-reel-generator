@@ -98,7 +98,7 @@ class ReelDatabaseTest {
             old.execSQL("INSERT INTO AppSettings VALUES (1,'HUMOR','DARK')")
             old.version = 1
         }
-        db = Room.databaseBuilder(context, ReelDatabase::class.java, "test.db").addMigrations(ReelDatabase.MIGRATION_1_2, ReelDatabase.MIGRATION_2_3).allowMainThreadQueries().build()
+        db = Room.databaseBuilder(context, ReelDatabase::class.java, "test.db").addMigrations(ReelDatabase.MIGRATION_1_2, ReelDatabase.MIGRATION_2_3, ReelDatabase.MIGRATION_3_4).allowMainThreadQueries().build()
         assertEquals("Trips", db.dao().folders().single().name)
         assertEquals(4, db.dao().candidates().single().useCount)
         assertEquals("DARK", db.dao().settings()?.humor)

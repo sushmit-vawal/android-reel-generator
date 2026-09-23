@@ -71,6 +71,12 @@ data class ConceptHistory(val category: String, val concept: String, val emotion
 @Entity(primaryKeys = ["sourceUri", "normalizedText", "sourceStartMs", "sourceEndMs"])
 data class ReelPairingHistory(val sourceUri: String, val normalizedText: String, val sourceStartMs: Long, val sourceEndMs: Long, val concept: String, val reelId: String, val createdAt: Long = System.currentTimeMillis())
 
+@Entity(indices = [Index("normalizedHash", unique = true), Index("importId")])
+data class ContentLibraryItem(@PrimaryKey val id: String, val importId: String?, val sourceType: String, val category: String, val subTheme: String, val rawText: String, val beatsJson: String, val tags: String, val style: String?, val preferredClipCount: Int?, val notes: String?, val normalizedHash: String, val importedAt: Long = System.currentTimeMillis(), val lastUsedAt: Long = 0, val useCount: Int = 0, val enabled: Boolean = true)
+
+@Entity
+data class ContentImport(@PrimaryKey val id: String, val filename: String, val importedAt: Long, val totalRows: Int, val successfulRows: Int, val duplicateRows: Int, val invalidRows: Int)
+
 @Dao
 abstract class ReelDao {
     @Query("SELECT * FROM SourceFolder ORDER BY name") abstract fun observeFolders(): Flow<List<SourceFolder>>
@@ -97,6 +103,13 @@ abstract class ReelDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordText(history: GeneratedTextHistory)
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordConcept(history: ConceptHistory)
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordPairing(history: ReelPairingHistory)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun addContent(item: ContentLibraryItem): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun addImport(import: ContentImport)
+    @Query("SELECT * FROM ContentLibraryItem WHERE enabled=1 ORDER BY lastUsedAt, importedAt") abstract suspend fun contentItems(): List<ContentLibraryItem>
+    @Query("SELECT * FROM ContentImport ORDER BY importedAt DESC") abstract suspend fun imports(): List<ContentImport>
+    @Query("UPDATE ContentLibraryItem SET enabled=:enabled WHERE id=:id") abstract suspend fun enableContent(id: String, enabled: Boolean)
+    @Query("DELETE FROM ContentLibraryItem WHERE importId=:importId") abstract suspend fun deleteContentImport(importId: String)
+    @Query("DELETE FROM ContentImport WHERE id=:importId") abstract suspend fun deleteImport(importId: String)
     @Query("SELECT * FROM AppSettings WHERE id=1") abstract suspend fun settings(): AppSettings?
     @Upsert abstract suspend fun saveSettings(settings: AppSettings)
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun addBatch(batch: Batch)
@@ -130,7 +143,7 @@ abstract class ReelDao {
     }
 }
 
-@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class, GeneratedTextHistory::class, ConceptHistory::class, ReelPairingHistory::class], version = 3, exportSchema = true)
+@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class, GeneratedTextHistory::class, ConceptHistory::class, ReelPairingHistory::class, ContentLibraryItem::class, ContentImport::class], version = 4, exportSchema = true)
 abstract class ReelDatabase : RoomDatabase() {
     abstract fun dao(): ReelDao
     companion object {
@@ -151,10 +164,18 @@ abstract class ReelDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS ReelPairingHistory (sourceUri TEXT NOT NULL, normalizedText TEXT NOT NULL, sourceStartMs INTEGER NOT NULL, sourceEndMs INTEGER NOT NULL, concept TEXT NOT NULL, reelId TEXT NOT NULL, createdAt INTEGER NOT NULL, PRIMARY KEY(sourceUri, normalizedText, sourceStartMs, sourceEndMs))")
             }
         }
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS ContentImport (id TEXT NOT NULL PRIMARY KEY, filename TEXT NOT NULL, importedAt INTEGER NOT NULL, totalRows INTEGER NOT NULL, successfulRows INTEGER NOT NULL, duplicateRows INTEGER NOT NULL, invalidRows INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS ContentLibraryItem (id TEXT NOT NULL PRIMARY KEY, importId TEXT, sourceType TEXT NOT NULL, category TEXT NOT NULL, subTheme TEXT NOT NULL, rawText TEXT NOT NULL, beatsJson TEXT NOT NULL, tags TEXT NOT NULL, style TEXT, preferredClipCount INTEGER, notes TEXT, normalizedHash TEXT NOT NULL, importedAt INTEGER NOT NULL, lastUsedAt INTEGER NOT NULL, useCount INTEGER NOT NULL, enabled INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_ContentLibraryItem_normalizedHash ON ContentLibraryItem(normalizedHash)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_ContentLibraryItem_importId ON ContentLibraryItem(importId)")
+            }
+        }
         @Volatile private var instance: ReelDatabase? = null
         fun get(context: Context): ReelDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, ReelDatabase::class.java, "reelgenerator.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
         }
     }
 }
