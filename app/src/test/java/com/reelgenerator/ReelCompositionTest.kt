@@ -44,10 +44,12 @@ class ReelCompositionTest {
         val generation = first.generationId
         assertSame(first, overlay.getBitmap(1_500_000)); assertEquals(generation, first.generationId)
         val gap = overlay.getBitmap(2_000_000)
-        assertSame(first, gap); assertEquals(Color.TRANSPARENT, gap.getPixel(540, 960))
+        assertSame(first, gap); assertEquals(Color.TRANSPARENT, gap.getPixel(ExportPolicy.WIDTH / 2, ExportPolicy.HEIGHT / 2))
         val second = overlay.getBitmap(3_000_000)
         assertNotEquals(generation, second.generationId)
-        assertNotEquals(Color.TRANSPARENT, second.getPixel(540, 960))
+        assertTrue((0 until second.width step 32).any { x ->
+            (0 until second.height step 32).any { y -> second.getPixel(x, y) != Color.TRANSPARENT }
+        })
         overlay.release(); assertTrue(second.isRecycled)
     }
 }

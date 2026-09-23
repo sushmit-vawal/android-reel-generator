@@ -124,8 +124,8 @@ class ReelExportDeviceTest {
         val width = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)!!.toInt()
         val height = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)!!.toInt()
         val rotation = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0
-        assertEquals(1080, if (rotation % 180 == 0) width else height)
-        assertEquals(1920, if (rotation % 180 == 0) height else width)
+            assertEquals(ExportPolicy.WIDTH, if (rotation % 180 == 0) width else height)
+            assertEquals(ExportPolicy.HEIGHT, if (rotation % 180 == 0) height else width)
         assertTrue(kotlin.math.abs(reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() - duration) < 250)
         assertNotEquals("yes", reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO))
     }
