@@ -133,7 +133,11 @@ class ReelExportDeviceTest {
     private fun assertBlue(bitmap: Bitmap) { val pixel = bitmap.getPixel(100, 100); assertTrue(Color.blue(pixel) > 180 && Color.red(pixel) < 80) }
     private fun whitePixels(bitmap: Bitmap): Int {
         var count = 0
-        for (y in 700 until minOf(1220, bitmap.height) step 2) for (x in 180 until minOf(900, bitmap.width) step 2) {
+        val left = (bitmap.width * 0.16f).toInt()
+        val right = (bitmap.width * 0.84f).toInt()
+        val top = (bitmap.height * 0.36f).toInt()
+        val bottom = (bitmap.height * 0.64f).toInt()
+        for (y in top until bottom step 2) for (x in left until right step 2) {
             val color = bitmap.getPixel(x, y)
             if (Color.red(color) > 220 && Color.green(color) > 220 && Color.blue(color) > 220) count++
         }
