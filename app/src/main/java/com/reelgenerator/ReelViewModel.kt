@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
 import androidx.work.*
 import com.reelgenerator.data.*
+import com.reelgenerator.content.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 
@@ -26,6 +27,8 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
     var loading by mutableStateOf(true); private set
     var managing by mutableStateOf(false); private set
     var message by mutableStateOf(""); private set
+    var contentItems by mutableStateOf<List<ContentLibraryItem>>(emptyList()); private set
+    var contentImports by mutableStateOf<List<ContentImport>>(emptyList()); private set
     private var scheduling by mutableStateOf(false)
     val busy get() = loading || managing || scheduling || workActive
 
@@ -33,6 +36,7 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { dao.observeFolders().collect { folders = it } }
         viewModelScope.launch { dao.observeBatch().collect { batch = it } }
         viewModelScope.launch { dao.observeLatestReels().collect { reels = it } }
+        viewModelScope.launch { while (isActive) { contentItems = dao.contentItems(); contentImports = dao.imports(); delay(1000) } }
         viewModelScope.launch {
             val settings = dao.settings() ?: AppSettings()
             category = ReelCategory.valueOf(settings.category)
@@ -47,6 +51,16 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
     fun chooseHumor(value: HumorStyle) { humor = value; saveSettings() }
     private fun saveSettings() { val value = AppSettings(category = category.name, humor = humor.name); viewModelScope.launch { dao.saveSettings(value) } }
     fun report(value: String) { message = value }
+    fun importContent(uri: Uri) = manage {
+        val resolver = getApplication<Application>().contentResolver
+        val name = DocumentFile.fromSingleUri(getApplication(), uri)?.name ?: "content.csv"
+        val csv = withContext(Dispatchers.IO) { resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read CSV.") }
+        val summary = ContentLibraryRepository(dao).importCsv(name, csv)
+        message = "Imported ${summary.imported}; skipped ${summary.duplicates} duplicates; ${summary.invalid} invalid rows."
+        contentItems = dao.contentItems(); contentImports = dao.imports()
+    }
+    fun deleteContentImport(id: String) = manage { ContentLibraryRepository(dao).deleteImport(id); contentItems = dao.contentItems(); contentImports = dao.imports() }
+    fun enableContent(item: ContentLibraryItem, enabled: Boolean) = manage { dao.enableContent(item.id, enabled); contentItems = dao.contentItems() }
     private fun manage(block: suspend () -> Unit) {
         if (busy) return
         managing = true

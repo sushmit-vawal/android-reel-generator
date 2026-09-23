@@ -23,6 +23,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import java.text.DateFormat
 import java.util.Date
+import com.reelgenerator.data.ContentLibraryItem
 
 @UnstableApi
 class MainActivity : ComponentActivity() {
@@ -33,6 +34,7 @@ class MainActivity : ComponentActivity() {
                 val model: ReelViewModel = viewModel()
                 var screen by rememberSaveable { mutableStateOf("home") }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) model.addFolder(uri) }
+                val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) model.importContent(uri) }
                 val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.generate() }
                 fun generate() {
                     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -44,7 +46,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     Column(Modifier.safeDrawingPadding().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Spacer(Modifier.height(12.dp))
-                        Text(if (screen == "folders") "SOURCE FOLDERS" else if (screen == "reels") "YOUR REELS" else "REEL GENERATOR", style = MaterialTheme.typography.headlineLarge)
+                        Text(if (screen == "folders") "SOURCE FOLDERS" else if (screen == "reels") "YOUR REELS" else if (screen == "content") "CONTENT LIBRARY" else "REEL GENERATOR", style = MaterialTheme.typography.headlineLarge)
                         if (screen != "home") TextButton(onClick = { screen = "home" }) { Text("Back") }
                         when (screen) {
                             "folders" -> {
@@ -83,12 +85,31 @@ class MainActivity : ComponentActivity() {
                                 }
                                 if (model.reels.isNotEmpty()) OutlinedButton(onClick = { shareVideos(model.reels.map { Uri.parse(it.outputUri) }, model) }) { Text("Share All") }
                             }
+                            "content" -> {
+                                Text("Import text you own. It stays on this phone and can be used alongside generated captions.")
+                                Button(onClick = { csvPicker.launch(arrayOf("text/*", "text/csv", "application/csv")) }, enabled = !model.busy, modifier = Modifier.fillMaxWidth()) { Text("Import CSV") }
+                                if (model.contentImports.isEmpty()) Text("No imports yet.")
+                                model.contentImports.forEach { imported ->
+                                    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(imported.filename, style = MaterialTheme.typography.titleMedium)
+                                        Text("${imported.successfulRows} imported • ${imported.duplicateRows} duplicates • ${imported.invalidRows} invalid")
+                                        TextButton(onClick = { model.deleteContentImport(imported.id) }, enabled = !model.busy) { Text("Delete import") }
+                                    } }
+                                }
+                                model.contentItems.take(50).forEach { item ->
+                                    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(item.rawText); Text("${item.category} • ${item.beatsJson.count { it == ',' } + 1} beat(s) • used ${item.useCount} time(s)", style = MaterialTheme.typography.bodySmall)
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Switch(item.enabled, { model.enableContent(item, it) }); Text(item.sourceType, style = MaterialTheme.typography.labelSmall) }
+                                    } }
+                                }
+                            }
                             else -> {
                                 Text("Your videos. Five moments to share.", style = MaterialTheme.typography.bodyLarge)
                                 Text("SOURCE FOLDERS", style = MaterialTheme.typography.labelLarge)
                                 if (model.folders.isEmpty()) Text("Choose one or more folders to get started.")
                                 else model.folders.forEach { Text("${it.name}${if (it.enabled) "" else " (disabled)"}") }
                                 OutlinedButton(onClick = { screen = "folders" }, modifier = Modifier.fillMaxWidth()) { Text("Select / Manage Folders") }
+                                OutlinedButton(onClick = { screen = "content" }, modifier = Modifier.fillMaxWidth()) { Text("Content Library") }
                                 Text("REEL TYPE", style = MaterialTheme.typography.labelLarge)
                                 Choice(model.category.label, ReelCategory.entries.map { it.label }, !model.busy) { label -> model.choose(ReelCategory.entries.first { it.label == label }) }
                                 if (model.category == ReelCategory.HUMOR) {
