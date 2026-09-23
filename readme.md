@@ -1,10 +1,10 @@
-# ReelGenerator — Phase 2
+# ReelGenerator — Phase 3A
 
-Native Kotlin / Compose application for Android 10+. Select source folders once, choose Lifestyle, Motivation, Travel or Humor, and tap **Generate** for five locally rendered, single-clip reels.
+Native Kotlin / Compose application for Android 10+. Select source folders once, choose Lifestyle, Motivation, Travel or Humor, and tap **Generate** for up to five locally rendered reels with one or multiple clips and independently timed text.
 
-Phase 1 was physically verified on the owner's Android phone and merged via PR #1 on 2026-09-23. Phase 2 adds folder libraries and sequential batches; it does not add AI or multi-clip composition.
+Phases 1 and 2 were physically verified by the owner and merged. Phase 3A adds a validated ReelPlan, multi-clip composition, timed text and a non-destructive Room migration. It does not claim AI understanding. See [the Phase 3A report](docs/PHASE_3A.md) for architecture, files, tests, limitations and the new phone checklist. Phases 3B/3C are deferred.
 
-## What Phase 2 provides
+## Preserved Phase 2 behavior
 
 - Add multiple Android source folders using the Storage Access Framework, one picker selection at a time. Read access survives app restarts/reboots where the provider permits.
 - Manage folders: add, remove, enable/disable, rescan, video counts, scan times and per-folder access errors. Removing a folder never deletes its source files.
@@ -13,12 +13,12 @@ Phase 1 was physically verified on the owner's Android phone and merged via PR #
 - Exactly five successful reels are targeted, sequentially. Fresh footage is preferred, and small libraries can reuse clips. Bad sources are skipped, with at most 20 attempts per execution. Partial results report their actual count.
 - Humor style: Auto, Funny or Dark. Each batch uses five different short preset captions. Dark humor is cynical, non-harmful entertainment.
 - WorkManager foreground generation with a progress notification, cancellation, persisted completed results and process-interruption recovery. Completed Gallery outputs are recovered by stable identifiers rather than rendered twice after a checkpoint interruption.
-- Each output uses the Phase 1 export path: up to 12 seconds, 1080×1920 center crop, H.264, 30 fps requested, no source audio, burned-in readable text, and MediaStore publication to `Movies/Upload Reels`.
+- Each output retains the Phase 1 export format: 1080×1920 center crop, H.264, 30 fps requested, no source audio, burned-in readable text, and MediaStore publication to `Movies/Upload Reels`. Phase 3A plans now control duration, trims and text timing (up to twenty seconds).
 - View/play each completed reel, share individually, or share the batch through Android's share sheet. Nothing is posted automatically.
 
 ## Install from an Android phone
 
-1. Sign in to GitHub in your phone browser, open **Actions → Android APK**, and choose a successful run on `codex/phase-2` (or `main` after merge).
+1. Sign in to GitHub in your phone browser, open **Actions → Android APK**, and choose a successful run on `codex/phase-3a` (or `main` after merge).
 2. Under Artifacts download **ReelGenerator-debug**, extract its ZIP, and tap `app-debug.apk`. Allow **Install unknown apps** for your browser/Files app if prompted.
 3. The APK requires Android 10 or newer. Debug builds from different runners can have different signing keys: if Android refuses an update because of a signature mismatch, uninstall the previous debug app, then install this one. Uninstalling resets selected folders and app history; exported Gallery videos remain outside app-private storage.
 4. Open ReelGenerator → **Select / Manage Folders → Add Source Folder**. Select a local video folder and approve access. Repeat for each additional folder. Android blocks some root/restricted directories; choose a permitted subfolder.
@@ -54,10 +54,10 @@ Codex Cloud needs an Android SDK and network access for build dependencies (incl
 
 ## Scope and limitations
 
-Phase 2 intentionally uses preset captions, one source clip per reel and simple usage-based selection. It does not perform semantic matching, visual analysis, model downloads, AI text generation or multi-clip editing. Choose a library appropriate to the category. Captions can repeat across batches. Folder names are not presented as visual understanding.
+The current local planner uses preset captions, source durations and usage-based selection. It does not perform semantic matching, visual analysis, model downloads or AI text generation. Plans support one/multiple clips and one/multiple text beats, with typical durations around eight seconds and a twenty-second maximum. Choose a library appropriate to the category. Captions can repeat across batches. Folder names are not presented as visual understanding.
 
 The foreground worker uses `mediaProcessing` on Android 15+ and `dataSync` for older releases. Android still controls service/job time limits and background starts. Each export has a ten-minute timeout. Output publishing and Room checkpoints complete before honoring cancellation, so a reel that finishes during cancellation may still be saved. Completed results persist, including when the rest of a batch fails; the app shows the latest batch, and earlier outputs remain in Gallery.
 
-Some cloud document providers may require their own network access. Select downloaded local footage for offline use. Metadata scanning is not visual analysis; frame/embedding caching starts in Phase 4. Device encoder support still determines which source formats can be exported.
+Some cloud document providers may require their own network access. Select downloaded local footage for offline use. Metadata scanning is not visual analysis; the revised Phase 3B scope covers cached clip analysis. Device encoder support still determines which source formats can be exported.
 
 References: [Media3 Transformer](https://developer.android.com/media/media3/transformer/getting-started), [WorkManager foreground workers](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running).

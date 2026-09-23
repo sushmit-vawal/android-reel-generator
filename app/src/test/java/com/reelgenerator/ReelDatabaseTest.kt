@@ -10,6 +10,7 @@ import org.junit.Assert.*
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.json.JSONObject
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [29])
@@ -75,5 +76,46 @@ class ReelDatabaseTest {
         assertEquals(0, dao.advanceBatch("cancelled", "RUNNING", "Late progress"))
         assertEquals(0, dao.advanceBatch("cancelled", "COMPLETE", "Late completion"))
         assertEquals("CANCELLED", dao.batch("cancelled")?.status)
+    }
+    @Test fun migrationRetainsPhaseTwoFoldersSettingsAndCompletedReels() = runTest {
+        db.close()
+        val schema = JSONObject(requireNotNull(javaClass.getResourceAsStream("/com.reelgenerator.data.ReelDatabase/1.json")).bufferedReader().use { it.readText() }).getJSONObject("database")
+        context.openOrCreateDatabase("test.db", Context.MODE_PRIVATE, null).use { old ->
+            val entities = schema.getJSONArray("entities")
+            for (index in 0 until entities.length()) {
+                val entity = entities.getJSONObject(index)
+                old.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
+                val indices = entity.optJSONArray("indices") ?: continue
+                for (i in 0 until indices.length()) old.execSQL(indices.getJSONObject(i).getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
+            }
+            val queries = schema.getJSONArray("setupQueries")
+            for (index in 0 until queries.length()) old.execSQL(queries.getString(index))
+            old.execSQL("INSERT INTO SourceFolder VALUES ('folder','Trips',1,1,123,NULL)")
+            old.execSQL("INSERT INTO SourceVideo VALUES ('video','Clip',1,10,'key',4,123)")
+            old.execSQL("INSERT INTO FolderVideo VALUES ('folder','video')")
+            old.execSQL("INSERT INTO Batch VALUES ('old','TRAVEL','AUTO',123,'COMPLETE','5 reels created')")
+            old.execSQL("INSERT INTO GeneratedReel VALUES ('reel','old',0,'video','Original caption','content://saved')")
+            old.execSQL("INSERT INTO AppSettings VALUES (1,'HUMOR','DARK')")
+            old.version = 1
+        }
+        db = Room.databaseBuilder(context, ReelDatabase::class.java, "test.db").addMigrations(ReelDatabase.MIGRATION_1_2).allowMainThreadQueries().build()
+        assertEquals("Trips", db.dao().folders().single().name)
+        assertEquals(4, db.dao().candidates().single().useCount)
+        assertEquals("DARK", db.dao().settings()?.humor)
+        val reel = db.dao().reels("old").single()
+        assertEquals("content://saved", reel.outputUri); assertNull(reel.planJson)
+        assertTrue(db.dao().segments("reel").isEmpty())
+    }
+    @Test fun multiclipsIncrementEverySourceOnceAndPersistPlan() = runTest {
+        val dao = db.dao()
+        dao.addFolder(SourceFolder("folder", "Clips"))
+        dao.replaceScan("folder", listOf(SourceVideo("a", "A", 1, 10), SourceVideo("b", "B", 1, 10)))
+        dao.addBatch(Batch("batch", "TRAVEL", "AUTO"))
+        val reel = GeneratedReel("multi", "batch", 0, "a", "Caption", planJson = "persisted snapshot")
+        dao.savePlannedReel(reel, listOf(GeneratedReelSegment("multi", 0, "a", 1000, 4000, 0), GeneratedReelSegment("multi", 1, "b", 2000, 5000, 3000)))
+        dao.completeReel(reel.copy(outputUri = "output")); dao.completeReel(reel.copy(outputUri = "output"))
+        assertEquals(listOf(1, 1), dao.candidates().map { it.useCount })
+        assertEquals("persisted snapshot", dao.reels("batch").single().planJson)
+        assertEquals(listOf("a", "b"), dao.segments("multi").map { it.sourceUri })
     }
 }

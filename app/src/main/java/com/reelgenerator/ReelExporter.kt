@@ -2,26 +2,19 @@ package com.reelgenerator
 
 import android.content.ContentValues
 import android.content.Context
-import android.graphics.*
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.StatFs
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
-import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.effect.BitmapOverlay
-import androidx.media3.effect.OverlayEffect
-import androidx.media3.effect.Presentation
 import androidx.media3.transformer.*
 import kotlinx.coroutines.*
 import java.io.File
 import java.util.UUID
+import com.reelgenerator.planning.*
+import com.reelgenerator.rendering.ReelCompositionFactory
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -36,6 +29,14 @@ class ReelExporter(private val context: Context) {
         onPublished: suspend (Uri) -> Unit = {},
         status: suspend (String) -> Unit
     ): Uri {
+        val clip = SourceClipReader(context).read(source.toString())
+        return export(LocalReelPlanner.legacy(id, category, clip, caption), onPublished, status)
+    }
+
+    suspend fun export(plan: ReelPlan, onPublished: suspend (Uri) -> Unit = {}, status: suspend (String) -> Unit): Uri {
+        plan.validated()
+        val id = plan.id
+        val category = plan.category
         // Stable per-reel names recover a published output after process death without duplicating it.
         val recovered = withContext(Dispatchers.IO) { findPublished(category, id) }
         if (recovered != null) {
@@ -44,32 +45,14 @@ class ReelExporter(private val context: Context) {
         }
         val temporary = File(context.cacheDir, "reel-$id.mp4")
         withContext(Dispatchers.IO) { if (temporary.exists()) check(temporary.delete()) { "Could not clear interrupted export." } }
-        var overlay: Bitmap? = null
         try {
-            status("Reading video…")
-            val duration = withContext(Dispatchers.IO) {
+            status("Preparing reel timeline…")
+            withContext(Dispatchers.IO) {
                 check(StatFs(context.cacheDir.path).availableBytes > 300L * 1024 * 1024) {
                     "Free at least 300 MB of storage and try again."
                 }
-                MediaMetadataRetriever().use { retriever ->
-                    retriever.setDataSource(context, source)
-                    require(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes") {
-                        "The selected file does not contain a readable video."
-                    }
-                    ExportPolicy.duration(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0)
-                }
             }
-            overlay = captionBitmap(caption)
-            val item = EditedMediaItem.Builder(
-                MediaItem.Builder().setUri(source).setClippingConfiguration(
-                    MediaItem.ClippingConfiguration.Builder().setEndPositionMs(duration).build()
-                ).build()
-            ).setRemoveAudio(true).setFrameRate(30).setEffects(
-                Effects(emptyList(), listOf(
-                    Presentation.createForWidthAndHeight(ExportPolicy.WIDTH, ExportPolicy.HEIGHT, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP),
-                    OverlayEffect(listOf(BitmapOverlay.createStaticBitmapOverlay(overlay)))
-                ))
-            ).build()
+            val composition = ReelCompositionFactory.create(plan)
             withContext(Dispatchers.Main.immediate) {
                 coroutineScope {
                     val transformer = Transformer.Builder(context)
@@ -95,7 +78,7 @@ class ReelExporter(private val context: Context) {
                                 }
                             })
                             continuation.invokeOnCancellation { Handler(Looper.getMainLooper()).post { transformer.cancel() } }
-                            try { transformer.start(item, temporary.absolutePath) }
+                            try { transformer.start(composition, temporary.absolutePath) }
                             catch (error: Exception) { if (continuation.isActive) continuation.resumeWithException(error) }
                         }
                     } finally { poller.cancel(); transformer.cancel() }
@@ -109,7 +92,7 @@ class ReelExporter(private val context: Context) {
             }
         } finally {
             temporary.delete()
-            overlay?.recycle()
+
         }
     }
 
@@ -153,24 +136,4 @@ class ReelExporter(private val context: Context) {
         }
     }
 
-    private fun captionBitmap(text: String): Bitmap {
-        val bitmap = Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            textSize = 64f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setShadowLayer(5f, 0f, 3f, Color.BLACK)
-        }
-        val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, 840)
-            .setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(12f, 1f).setIncludePad(false).build()
-        val top = (1920 - layout.height) / 2f
-        canvas.drawRoundRect(88f, top - 32f, 992f, top + layout.height + 32f, 24f, 24f,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(175, 12, 15, 22) })
-        canvas.save()
-        canvas.translate(120f, top)
-        layout.draw(canvas)
-        canvas.restore()
-        return bitmap
-    }
 }
