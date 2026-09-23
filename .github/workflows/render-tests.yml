@@ -34,7 +34,11 @@ jobs:
             chmod +x gradlew
             ./gradlew connectedDebugAndroidTest --stacktrace || { adb logcat -d > render-logcat.txt; exit 1; }
             mkdir -p artifacts
-            adb pull /sdcard/Android/data/com.reelgenerator/files/render-tests artifacts/render-tests
+            if adb shell test -d /sdcard/Android/data/com.reelgenerator/files/render-tests; then
+              adb pull /sdcard/Android/data/com.reelgenerator/files/render-tests artifacts/render-tests
+            else
+              echo 'No optional render evidence directory was produced.'
+            fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
