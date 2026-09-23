@@ -12,6 +12,9 @@ import androidx.media3.transformer.*
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.reelgenerator.planning.*
+import com.reelgenerator.content.*
+import com.reelgenerator.data.*
+import androidx.room.Room
 import kotlinx.coroutines.*
 import org.junit.*
 import org.junit.Assert.*
@@ -34,6 +37,33 @@ class ReelExportDeviceTest {
         blue = fixture("blue", Color.BLUE, 360, 640)
     }
     @After fun removeTestGalleryEntries() { published.forEach { context.contentResolver.delete(it, null, null) } }
+
+    @Test fun importedCsvProducesPublishedReelAndUsageCheckpoint() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(context, ReelDatabase::class.java).build()
+        try {
+            val dao = db.dao()
+            ContentLibraryRepository(dao).importCsv("render.csv", "category,text\nTravel,\"FIRST || SECOND\"")
+            val plan = ContentCandidatePlanner().select(
+                PlanningRequest("csv_${UUID.randomUUID()}", ReelCategory.TRAVEL, HumorStyle.AUTO, 0, 8, listOf(red)),
+                dao.contentItems(), listOf(SourceVideo(red.uri, "fixture.mp4", 1, 1)), dao.completedCaptions(), emptyMap())
+            assertEquals(listOf("FIRST", "SECOND"), plan.textBeats.map { it.text })
+            assertTrue(plan.metadata.notes.contains("textSource=USER_CSV"))
+            dao.addBatch(Batch("csvbatch", "TRAVEL", "AUTO"))
+            val reel = GeneratedReel(plan.id, "csvbatch", 0, red.uri, "FIRST\nSECOND", planJson = ReelPlanCodec.encode(plan))
+            dao.savePlannedReel(reel, plan.clips.mapIndexed { index, s -> GeneratedReelSegment(plan.id, index, s.source.uri, s.trimStartMs, s.trimEndMs, s.outputStartMs) })
+            val uri = withTimeout(180000) { ReelExporter(context).export(plan, onPublished = { published.add(it); dao.completeReel(reel.copy(outputUri = it.toString())) }) {} }
+            inspect(uri) { reader ->
+                assertOutput(reader, plan.durationMs)
+                val first = requireNotNull(reader.getFrameAtTime(500000, MediaMetadataRetriever.OPTION_CLOSEST))
+                val last = requireNotNull(reader.getFrameAtTime((plan.durationMs - 500) * 1000, MediaMetadataRetriever.OPTION_CLOSEST))
+                assertTrue(whitePixels(first) > 100); assertTrue(whitePixels(last) > 100)
+                assertNotEquals(whitePixels(first), whitePixels(last))
+                first.recycle(); last.recycle()
+            }
+            assertEquals(1, dao.contentItems().single().useCount)
+            assertEquals("FIRST\nSECOND", dao.completedCaptions().single())
+        } finally { db.close() }
+    }
 
     @Test fun singleClipSingleTextRetainsPhaseOneExport() = runBlocking {
         val uri = withTimeout(180_000) {

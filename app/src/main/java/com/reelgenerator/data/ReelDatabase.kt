@@ -5,6 +5,9 @@ import androidx.room.*
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
+import com.reelgenerator.content.TextIdentity
+import com.reelgenerator.content.ContentCsvParser
+import com.reelgenerator.planning.ReelPlanCodec
 
 @Entity
 data class SourceFolder(
@@ -107,6 +110,10 @@ abstract class ReelDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun addImport(import: ContentImport)
     @Query("SELECT * FROM ContentLibraryItem WHERE enabled=1 ORDER BY lastUsedAt, importedAt") abstract suspend fun contentItems(): List<ContentLibraryItem>
     @Query("SELECT * FROM ContentImport ORDER BY importedAt DESC") abstract suspend fun imports(): List<ContentImport>
+    @Query("SELECT caption FROM GeneratedReel WHERE outputUri IS NOT NULL") abstract suspend fun completedCaptions(): List<String>
+    @Query("UPDATE ContentLibraryItem SET useCount=useCount+1, lastUsedAt=:time WHERE id=:id") abstract suspend fun contentUsed(id: String, time: Long)
+    @Query("SELECT * FROM ContentLibraryItem ORDER BY importedAt DESC") abstract fun observeContent(): Flow<List<ContentLibraryItem>>
+    @Query("SELECT * FROM ContentImport ORDER BY importedAt DESC") abstract fun observeImports(): Flow<List<ContentImport>>
     @Query("UPDATE ContentLibraryItem SET enabled=:enabled WHERE id=:id") abstract suspend fun enableContent(id: String, enabled: Boolean)
     @Query("DELETE FROM ContentLibraryItem WHERE importId=:importId") abstract suspend fun deleteContentImport(importId: String)
     @Query("DELETE FROM ContentImport WHERE id=:importId") abstract suspend fun deleteImport(importId: String)
@@ -136,9 +143,13 @@ abstract class ReelDao {
         if (!alreadySaved) {
             val sources = segments(reel.id).map { it.sourceUri }.ifEmpty { listOf(reel.sourceUri) }.distinct()
             sources.forEach { used(it, System.currentTimeMillis()) }
-            val normalized = reel.caption.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
-            if (normalized.isNotEmpty()) recordText(GeneratedTextHistory(reel.id, "unknown", "unknown", reel.caption, normalized, normalized.hashCode().toString(), reel.id))
-            segments(reel.id).forEach { segment -> recordPairing(ReelPairingHistory(segment.sourceUri, normalized, segment.trimStartMs, segment.trimEndMs, "unknown", reel.id)) }
+            val normalized = TextIdentity.normalize(reel.caption)
+            val plan = reel.planJson?.let { runCatching { ReelPlanCodec.decode(it) }.getOrNull() }
+            val category = plan?.category?.name ?: batch(reel.batchId)?.category ?: "unknown"
+            val concept = plan?.concept ?: "unknown"
+            if (normalized.isNotEmpty()) recordText(GeneratedTextHistory(reel.id, category, concept, reel.caption, normalized, ContentCsvParser.hash(normalized), reel.id))
+            segments(reel.id).forEach { segment -> recordPairing(ReelPairingHistory(segment.sourceUri, normalized, segment.trimStartMs, segment.trimEndMs, concept, reel.id)) }
+            plan?.metadata?.notes?.firstOrNull { it.startsWith("contentItemId=") }?.substringAfter('=')?.let { contentUsed(it, System.currentTimeMillis()) }
         }
     }
 }

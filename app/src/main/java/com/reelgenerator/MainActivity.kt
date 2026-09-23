@@ -76,6 +76,8 @@ class MainActivity : ComponentActivity() {
                                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Text("Reel ${reel.slot + 1}", style = MaterialTheme.typography.titleMedium)
                                             Text(reel.caption)
+                                            reel.planJson?.let { json -> runCatching { com.reelgenerator.planning.ReelPlanCodec.decode(json) }.getOrNull() }
+                                                ?.metadata?.notes?.firstOrNull { it.startsWith("textSource=") }?.let { Text("Text source: ${it.substringAfter('=')}", style = MaterialTheme.typography.bodySmall) }
                                             Row {
                                                 TextButton(onClick = { openVideo(Uri.parse(reel.outputUri), model) }) { Text("Play") }
                                                 TextButton(onClick = { shareVideos(listOf(Uri.parse(reel.outputUri)), model) }) { Text("Share") }
@@ -98,7 +100,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 model.contentItems.take(50).forEach { item ->
                                     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(item.rawText); Text("${item.category} • ${item.beatsJson.count { it == ',' } + 1} beat(s) • used ${item.useCount} time(s)", style = MaterialTheme.typography.bodySmall)
+                                        Text(item.rawText); Text("${item.category} • ${runCatching { org.json.JSONArray(item.beatsJson).length() }.getOrDefault(0)} beat(s) • used ${item.useCount} time(s)", style = MaterialTheme.typography.bodySmall)
                                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Switch(item.enabled, { model.enableContent(item, it) }); Text(item.sourceType, style = MaterialTheme.typography.labelSmall) }
                                     } }
                                 }
@@ -127,7 +129,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 model.batch?.let { Text(it.message) }
                                 if (model.reels.isNotEmpty()) OutlinedButton(onClick = { screen = "reels" }, modifier = Modifier.fillMaxWidth()) { Text("View ${model.reels.size} Reels") }
-                                Text("Your videos stay on your phone. Text is locally preset; choose footage that suits your category.", style = MaterialTheme.typography.bodySmall)
+                                Text("Uses fresh matching library text and local fallback captions. No AI model is installed. Name footage descriptively to help local matching.", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         if (model.loading || model.managing) LinearProgressIndicator(Modifier.fillMaxWidth())

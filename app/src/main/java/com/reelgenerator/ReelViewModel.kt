@@ -36,7 +36,8 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { dao.observeFolders().collect { folders = it } }
         viewModelScope.launch { dao.observeBatch().collect { batch = it } }
         viewModelScope.launch { dao.observeLatestReels().collect { reels = it } }
-        viewModelScope.launch { while (isActive) { contentItems = dao.contentItems(); contentImports = dao.imports(); delay(1000) } }
+        viewModelScope.launch { dao.observeContent().collect { contentItems = it } }
+        viewModelScope.launch { dao.observeImports().collect { contentImports = it } }
         viewModelScope.launch {
             val settings = dao.settings() ?: AppSettings()
             category = ReelCategory.valueOf(settings.category)

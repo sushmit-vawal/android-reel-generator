@@ -13,6 +13,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.work.*
 import com.reelgenerator.data.*
 import com.reelgenerator.analysis.*
+import com.reelgenerator.content.ContentCandidatePlanner
 import com.reelgenerator.planning.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -43,7 +44,8 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             val available = mutableListOf<SourceClip>()
             val reader = SourceClipReader(applicationContext)
             // Bounded metadata inspection, no frame analysis/AI in Phase 3A.
-            dao.candidates().take(40).forEach { video ->
+            val sourceVideos = dao.candidates().take(40)
+            sourceVideos.forEach { video ->
                 currentCoroutineContext().ensureActive()
                 try {
                     update("Reading clip durations… ${available.size + 1}")
@@ -63,6 +65,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
             saved.forEach { countUsage(it) }
             val planner: ReelPlanner = LocalReelPlanner()
+            val candidatePlanner = ContentCandidatePlanner()
             val frameProvider = CachedFrameAnalysisProvider(
                 LocalFrameAnalysisProvider(applicationContext),
                 FrameAnalysisCache(applicationContext)
@@ -79,14 +82,14 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     ?.takeIf { plan -> plan.clips.all { it.source.uri in sources } }
                 val planned = recoveredPlan ?: if (old != null && old.planJson == null) {
                     LocalReelPlanner.legacy(request.id, category, ordered.first(), old.caption)
-                } else try { planner.plan(request) } catch (error: IllegalArgumentException) {
-                    planner.plan(request.copy(forceSingle = true, fallbackReason = error.localizedMessage ?: "Planning failed."))
-                }
-                val analysis = runCatching {
+                } else candidatePlanner.select(request, dao.contentItems(), sourceVideos, dao.completedCaptions(), usage)
+                val analysis = try {
                     withTimeout(10_000) {
-                        frameProvider.analyze(FrameAnalysisRequest(Uri.parse(ordered.first().uri), listOf(0L, ordered.first().durationMs / 2, ordered.first().durationMs - 1)))
+                        withContext(Dispatchers.IO) { frameProvider.analyze(FrameAnalysisRequest(Uri.parse(planned.clips.first().source.uri), listOf(0L, planned.clips.first().source.durationMs / 2))) }
                     }
-                }.getOrNull()
+                } catch (_: TimeoutCancellationException) { null }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
                 val plan = planned.copy(metadata = planned.metadata.copy(
                     notes = planned.metadata.notes + "frameAnalysis=${analysis?.provider ?: "unavailable"}; samples=${analysis?.samples?.size ?: 0}"
                 ))
@@ -118,7 +121,10 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     } else {
                         if (plan.clips.size == 1) throw error
                         update("Reel ${slot + 1} of 5 • Retrying with one clip…")
-                        render(planner.plan(request.copy(forceSingle = true, fallbackReason = error.localizedMessage ?: "Composition failed.")))
+                        val retry = planner.plan(request.copy(sources = plan.clips.map { it.source }, forceSingle = true,
+                            captionOverride = plan.textBeats.joinToString("\n") { it.text }, scriptBeats = plan.textBeats.map { it.text },
+                            fallbackReason = error.localizedMessage ?: "Composition failed."))
+                        render(retry.copy(concept = plan.concept, metadata = retry.metadata.copy(notes = plan.metadata.notes)))
                     }
                 }
                 dao.reels(batchId).find { it.slot == slot }?.let { countUsage(it) }
