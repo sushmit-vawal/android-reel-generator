@@ -6,6 +6,8 @@ import android.graphics.*
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.StatFs
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.text.Layout
 import android.text.StaticLayout
@@ -25,9 +27,23 @@ import kotlin.coroutines.resumeWithException
 
 @UnstableApi
 class ReelExporter(private val context: Context) {
-    suspend fun export(source: Uri, category: ReelCategory, status: (String) -> Unit): Uri {
-        val id = UUID.randomUUID().toString()
+    suspend fun recover(category: ReelCategory, id: String): Uri? = withContext(Dispatchers.IO) { findPublished(category, id) }
+    suspend fun export(
+        source: Uri,
+        category: ReelCategory,
+        caption: String = category.caption,
+        id: String = UUID.randomUUID().toString(),
+        onPublished: suspend (Uri) -> Unit = {},
+        status: suspend (String) -> Unit
+    ): Uri {
+        // Stable per-reel names recover a published output after process death without duplicating it.
+        val recovered = withContext(Dispatchers.IO) { findPublished(category, id) }
+        if (recovered != null) {
+            withContext(NonCancellable) { onPublished(recovered) }
+            return recovered
+        }
         val temporary = File(context.cacheDir, "reel-$id.mp4")
+        withContext(Dispatchers.IO) { if (temporary.exists()) check(temporary.delete()) { "Could not clear interrupted export." } }
         var overlay: Bitmap? = null
         try {
             status("Reading video…")
@@ -43,7 +59,7 @@ class ReelExporter(private val context: Context) {
                     ExportPolicy.duration(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0)
                 }
             }
-            overlay = captionBitmap(category.caption)
+            overlay = captionBitmap(caption)
             val item = EditedMediaItem.Builder(
                 MediaItem.Builder().setUri(source).setClippingConfiguration(
                     MediaItem.ClippingConfiguration.Builder().setEndPositionMs(duration).build()
@@ -78,7 +94,7 @@ class ReelExporter(private val context: Context) {
                                     if (continuation.isActive) continuation.resumeWithException(exportException)
                                 }
                             })
-                            continuation.invokeOnCancellation { transformer.cancel() }
+                            continuation.invokeOnCancellation { Handler(Looper.getMainLooper()).post { transformer.cancel() } }
                             try { transformer.start(item, temporary.absolutePath) }
                             catch (error: Exception) { if (continuation.isActive) continuation.resumeWithException(error) }
                         }
@@ -88,11 +104,28 @@ class ReelExporter(private val context: Context) {
             currentCoroutineContext().ensureActive()
             status("Saving to Upload Reels…")
             // Once publishing begins, finish the short transaction even if the screen closes.
-            return withContext(NonCancellable + Dispatchers.IO) { publish(temporary, category, id) }
+            return withContext(NonCancellable + Dispatchers.IO) {
+                publish(temporary, category, id).also { onPublished(it) }
+            }
         } finally {
             temporary.delete()
             overlay?.recycle()
         }
+    }
+
+    private fun findPublished(category: ReelCategory, id: String): Uri? {
+        val resolver = context.contentResolver
+        val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        resolver.query(collection, arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.IS_PENDING, MediaStore.Video.Media.SIZE),
+            "${MediaStore.Video.Media.DISPLAY_NAME}=? AND ${MediaStore.Video.Media.RELATIVE_PATH}=?",
+            arrayOf(ExportPolicy.fileName(category, id), ExportPolicy.RELATIVE_PATH), null)?.use {
+            while (it.moveToNext()) {
+                val uri = android.content.ContentUris.withAppendedId(collection, it.getLong(0))
+                if (it.getInt(1) == 0 && it.getLong(2) > 0) return uri
+                resolver.delete(uri, null, null)
+            }
+        }
+        return null
     }
 
     private fun publish(file: File, category: ReelCategory, id: String): Uri {
