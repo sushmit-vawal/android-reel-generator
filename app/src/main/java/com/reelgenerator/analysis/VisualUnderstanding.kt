@@ -121,9 +121,10 @@ object VisualScorer {
         val motion = (1.0 - abs(intent.desiredEnergy - segment.vibe.motion)).coerceIn(0.0, 1.0)
         val vibe = (1.0 - abs(intent.desiredEnergy - segment.vibe.energy)).coerceIn(0.0, 1.0)
         val reuse = minOf(policy.maximumReusePenalty, uses.coerceAtLeast(0) * .012 + if (paired) .03 else 0.0)
-        val overall = .57 * semantic + .05 * concept + .17 * vibe + .08 * motion + .08 * segment.quality + .05 * segment.crop.suitability - reuse
+        val relevance = .57 * semantic + .05 * concept + .17 * vibe + .08 * motion + .08 * segment.quality + .05 * segment.crop.suitability
+        val overall = relevance - reuse
         return VisualMatchScore(semantic, concept, vibe, motion, segment.quality, reuse, overall,
-            semantic >= policy.minimumSemanticMatch && vibe >= policy.minimumVibeMatch && overall >= policy.minimumOverallVisualMatch && segment.quality >= policy.minimumQuality)
+            semantic >= policy.minimumSemanticMatch && vibe >= policy.minimumVibeMatch && relevance >= policy.minimumOverallVisualMatch && segment.quality >= policy.minimumQuality)
     }
     fun continuity(a: ClipTemporalSegment, b: ClipTemporalSegment, deliberateEnergyChange: Double): Double =
         (.06 * abs(a.vibe.brightness - b.vibe.brightness) + .04 * (abs(a.vibe.motion - b.vibe.motion) - deliberateEnergyChange).coerceAtLeast(0.0)

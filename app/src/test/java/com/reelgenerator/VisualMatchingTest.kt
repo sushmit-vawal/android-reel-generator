@@ -35,6 +35,15 @@ class VisualMatchingTest {
         assertTrue(VisualScorer.score(wanted, section("ocean", energy = .1), 0, false, MatchPolicy()).eligible)
         assertFalse(VisualScorer.score(wanted, section("ocean", energy = .95), 0, false, MatchPolicy()).eligible)
     }
+    @Test fun reuseCanChangeRankButCannotExhaustOtherwiseEligibleFootage() {
+        val wanted = intent("The ocean is calling")
+        val source = section("ocean", confidence = .52)
+        val fresh = VisualScorer.score(wanted, source, 0, false, MatchPolicy(minimumOverallVisualMatch = .65))
+        val reused = VisualScorer.score(wanted, source, 100, true, MatchPolicy(minimumOverallVisualMatch = .65))
+        assertTrue(fresh.eligible)
+        assertTrue(reused.eligible)
+        assertTrue(reused.overall < .65)
+    }
     @Test fun motivationDemandsEffortInsteadOfGenericScenery() {
         val wanted = intent("No motivation. Still showed up.", ReelCategory.MOTIVATION)
         assertTrue(VisualScorer.score(wanted, section("weightlifting", energy = .65), 0, false, MatchPolicy()).eligible)
