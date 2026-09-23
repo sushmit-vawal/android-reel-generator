@@ -29,6 +29,7 @@ suspend fun runBatch(
         catch (error: Exception) {
             failed.add(source)
             errors.add(error.localizedMessage ?: "A video could not be rendered.")
+            if (error is com.reelgenerator.content.NoVisualMatchException) break
         }
     }
     return BatchOutcome(outputs, errors)

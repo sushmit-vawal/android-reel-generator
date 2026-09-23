@@ -6,7 +6,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.util.UnstableApi
@@ -14,6 +13,7 @@ import androidx.work.*
 import com.reelgenerator.data.*
 import com.reelgenerator.analysis.*
 import com.reelgenerator.content.ContentCandidatePlanner
+import com.reelgenerator.content.NoVisualMatchException
 import com.reelgenerator.planning.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -30,6 +30,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val humor = HumorStyle.entries.find { it.name == inputData.getString("humor") } ?: HumorStyle.AUTO
         dao.addBatch(Batch(batchId, category.name, humor.name))
         if (dao.batch(batchId)?.status == "CANCELLED") return Result.success()
+        var visualIndex: LibraryVisualIndex? = null
         try {
             setForeground(notification("Scanning source folders…"))
             update("Scanning source folders…")
@@ -40,21 +41,12 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     dao.completeReel(pending.copy(outputUri = output.toString()))
                 }
             }
-            val metadataErrors = mutableListOf<String>()
-            val available = mutableListOf<SourceClip>()
-            val reader = SourceClipReader(applicationContext)
-            // Bounded metadata inspection, no frame analysis/AI in Phase 3A.
-            val sourceVideos = dao.candidates().take(40)
-            sourceVideos.forEach { video ->
-                currentCoroutineContext().ensureActive()
-                try {
-                    update("Reading clip durations… ${available.size + 1}")
-                    available.add(withTimeout(15_000) { reader.read(video) })
-                } catch (_: TimeoutCancellationException) { metadataErrors.add("A video provider took too long to respond.") }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) { metadataErrors.add(error.localizedMessage ?: "Could not read video metadata.") }
-            }
-            val sources = available.map { it.uri }
+            val sourceVideos = dao.candidates()
+            val index = LibraryVisualIndex(applicationContext, dao, sourceVideos).also { visualIndex = it }
+            index.load(batchId.hashCode())
+            // Every batch explores another fair, randomized page. All cached clips remain eligible.
+            index.expand(progress = ::update)
+            val sources = sourceVideos.map { it.uri }
             val saved = dao.reels(batchId).filter { it.outputUri != null }
             val previous = saved.map { BatchOutput(it.sourceUri, requireNotNull(it.outputUri)) }
             val usage = mutableMapOf<String, Int>()
@@ -64,35 +56,38 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 }
             }
             saved.forEach { countUsage(it) }
-            val planner: ReelPlanner = LocalReelPlanner()
             val candidatePlanner = ContentCandidatePlanner()
-            val frameProvider = CachedFrameAnalysisProvider(
-                LocalFrameAnalysisProvider(applicationContext),
-                FrameAnalysisCache(applicationContext)
-            )
-            val outcome = runBatch(sources, previous, sourceUseCount = { usage[it] ?: 0 }) { slot, source ->
+            val unusable = mutableSetOf<String>()
+            val outcome = runBatch(sources, previous, sourceUseCount = { usage[it] ?: 0 }) { slot, _ ->
                 currentCoroutineContext().ensureActive()
                 if (dao.batch(batchId)?.status == "CANCELLED") throw CancellationException()
                 update("Planning reel ${slot + 1} of 5…")
                 val old = dao.reels(batchId).find { it.slot == slot }
-                val ordered = listOf(available.first { it.uri == source }) + available.filter { it.uri != source }.sortedBy { usage[it.uri] ?: 0 }
+                val ordered = index.sources.values.filterNot { it.uri in unusable }
                 val request = PlanningRequest("${batchId}_$slot", category, humor, slot, batchId.hashCode(), ordered,
                     captionOverride = old?.caption?.takeIf { old.planJson == null })
                 val recoveredPlan = old?.planJson?.let { json -> runCatching { ReelPlanCodec.decode(json) }.getOrNull() }
-                    ?.takeIf { plan -> plan.clips.all { it.source.uri in sources } }
-                val planned = recoveredPlan ?: if (old != null && old.planJson == null) {
-                    LocalReelPlanner.legacy(request.id, category, ordered.first(), old.caption)
-                } else candidatePlanner.select(request, dao.contentItems(), sourceVideos, dao.completedCaptions(), usage)
-                val analysis = try {
-                    withTimeout(10_000) {
-                        withContext(Dispatchers.IO) { frameProvider.analyze(FrameAnalysisRequest(Uri.parse(planned.clips.first().source.uri), listOf(0L, planned.clips.first().source.durationMs / 2))) }
+                    ?.takeIf { plan -> plan.clips.all { it.source.uri in sources && it.source.uri !in unusable } }
+                suspend fun choosePlan(): ReelPlan {
+                    while (true) {
+                        try {
+                            return candidatePlanner.select(request.copy(sources = index.sources.values.filterNot { it.uri in unusable }),
+                                dao.contentItems(), sourceVideos, dao.completedCaptions(), usage, index.analyses, dao.recentPairings())
+                        } catch (noMatch: NoVisualMatchException) {
+                            if (index.remaining == 0) throw noMatch
+                            update("Looking for a better match in more folders…")
+                            index.expand(progress = ::update)
+                        } finally {
+                            // App-private development diagnostics, never included in normal UI or shared.
+                            withContext(Dispatchers.IO) { runCatching {
+                                java.io.File(applicationContext.filesDir, "visual-match-debug.txt").writeText(candidatePlanner.diagnostics.joinToString("\n"))
+                            } }
+                        }
                     }
-                } catch (_: TimeoutCancellationException) { null }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { null }
-                val plan = planned.copy(metadata = planned.metadata.copy(
-                    notes = planned.metadata.notes + "frameAnalysis=${analysis?.provider ?: "unavailable"}; samples=${analysis?.samples?.size ?: 0}"
-                ))
+                }
+                val plan = recoveredPlan ?: if (old != null && old.planJson == null && ordered.isNotEmpty()) {
+                    LocalReelPlanner.legacy(request.id, category, ordered.first(), old.caption)
+                } else choosePlan()
                 suspend fun render(planToRender: ReelPlan): String {
                     val reel = GeneratedReel(planToRender.id, batchId, slot, planToRender.clips.first().source.uri,
                         planToRender.textBeats.joinToString("\n") { it.text }, planJson = ReelPlanCodec.encode(planToRender))
@@ -119,12 +114,9 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                         dao.completeReel(checkpoint.copy(outputUri = published.toString()))
                         published.toString()
                     } else {
-                        if (plan.clips.size == 1) throw error
-                        update("Reel ${slot + 1} of 5 • Retrying with one clip…")
-                        val retry = planner.plan(request.copy(sources = plan.clips.map { it.source }, forceSingle = true,
-                            captionOverride = plan.textBeats.joinToString("\n") { it.text }, scriptBeats = plan.textBeats.map { it.text },
-                            fallbackReason = error.localizedMessage ?: "Composition failed."))
-                        render(retry.copy(concept = plan.concept, metadata = retry.metadata.copy(notes = plan.metadata.notes)))
+                        // Do not flatten a matched narrative onto an arbitrary first clip after an export error.
+                        unusable.addAll(plan.clips.map { it.source.uri })
+                        throw error
                     }
                 }
                 dao.reels(batchId).find { it.slot == slot }?.let { countUsage(it) }
@@ -132,9 +124,9 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
             val count = outcome.outputs.size
             val folderErrors = dao.folders().filter { it.enabled }.mapNotNull { it.error }
-            val detail = (outcome.errors + metadataErrors + folderErrors).firstOrNull()
+            val detail = (outcome.errors + index.errors + folderErrors).firstOrNull()
             val message = when {
-                count == 5 -> "5 reels created • Saved to Movies/Upload Reels"
+                count == 5 -> "5 reels created • Saved to Movies/Upload Reels • ${index.analyses.size}/${sourceVideos.size} videos indexed; more explored next batch"
                 sources.isEmpty() -> "$count of 5 reels created. No accessible videos. Add or rescan a source folder."
                 else -> "$count of 5 reels created. ${detail ?: "No more usable source videos."}"
             }
@@ -152,7 +144,7 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             val count = dao.reels(batchId).count { it.outputUri != null }
             dao.advanceBatch(batchId, "FAILED", "$count of 5 reels saved. ${error.localizedMessage ?: "Could not start generation. Please retry."}")
             return Result.failure()
-        }
+        } finally { visualIndex?.close() }
     }
 
     private suspend fun update(message: String) {

@@ -80,8 +80,17 @@ data class ContentLibraryItem(@PrimaryKey val id: String, val importId: String?,
 @Entity
 data class ContentImport(@PrimaryKey val id: String, val filename: String, val importedAt: Long, val totalRows: Int, val successfulRows: Int, val duplicateRows: Int, val invalidRows: Int)
 
+@Entity
+data class CachedClipAnalysis(@PrimaryKey val sourceUri: String, val fingerprint: String, val analysisJson: String,
+    val durationMs: Long, val width: Int, val height: Int, val analyzedAt: Long)
+
 @Dao
 abstract class ReelDao {
+    @Query("SELECT * FROM CachedClipAnalysis") abstract suspend fun clipAnalyses(): List<CachedClipAnalysis>
+    @Upsert abstract suspend fun saveClipAnalysis(analysis: CachedClipAnalysis)
+    @Query("SELECT l.* FROM FolderVideo l JOIN SourceFolder f ON f.uri=l.folderUri WHERE f.enabled=1 AND f.error IS NULL")
+    abstract suspend fun enabledVideoLinks(): List<FolderVideo>
+    @Query("SELECT * FROM ReelPairingHistory ORDER BY createdAt DESC LIMIT 2000") abstract suspend fun recentPairings(): List<ReelPairingHistory>
     @Query("SELECT * FROM SourceFolder ORDER BY name") abstract fun observeFolders(): Flow<List<SourceFolder>>
     @Query("SELECT * FROM SourceFolder ORDER BY name") abstract suspend fun folders(): List<SourceFolder>
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun addFolder(folder: SourceFolder)
@@ -154,10 +163,15 @@ abstract class ReelDao {
     }
 }
 
-@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class, GeneratedTextHistory::class, ConceptHistory::class, ReelPairingHistory::class, ContentLibraryItem::class, ContentImport::class], version = 4, exportSchema = true)
+@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class, GeneratedTextHistory::class, ConceptHistory::class, ReelPairingHistory::class, ContentLibraryItem::class, ContentImport::class, CachedClipAnalysis::class], version = 5, exportSchema = true)
 abstract class ReelDatabase : RoomDatabase() {
     abstract fun dao(): ReelDao
     companion object {
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS CachedClipAnalysis (sourceUri TEXT NOT NULL PRIMARY KEY, fingerprint TEXT NOT NULL, analysisJson TEXT NOT NULL, durationMs INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, analyzedAt INTEGER NOT NULL)")
+            }
+        }
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE GeneratedReel ADD COLUMN planJson TEXT")
@@ -186,7 +200,7 @@ abstract class ReelDatabase : RoomDatabase() {
         @Volatile private var instance: ReelDatabase? = null
         fun get(context: Context): ReelDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, ReelDatabase::class.java, "reelgenerator.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
         }
     }
 }

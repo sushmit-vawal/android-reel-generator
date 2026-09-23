@@ -7,7 +7,7 @@ import com.reelgenerator.data.SourceVideo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Metadata only, deliberately separate from the future frame/semantic ClipAnalyzer. */
+/** Metadata only; expensive frame inference is handled by the cached visual index. */
 class SourceClipReader(private val context: Context) {
     suspend fun read(video: SourceVideo): SourceClip = read(video.uri, video.documentKey)
     suspend fun read(uri: String, id: String = uri): SourceClip = withContext(Dispatchers.IO) {
@@ -18,7 +18,8 @@ class SourceClipReader(private val context: Context) {
             val width = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
             val height = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
             require(duration >= 1_000 && width > 0 && height > 0) { "Choose a readable video at least one second long." }
-            SourceClip(id, uri, duration, width, height)
+            val rotation = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            if (rotation % 180 != 0) SourceClip(id, uri, duration, height, width) else SourceClip(id, uri, duration, width, height)
         }
     }
 }

@@ -58,10 +58,9 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
         val csv = withContext(Dispatchers.IO) { resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read CSV.") }
         val summary = ContentLibraryRepository(dao).importCsv(name, csv)
         message = "Imported ${summary.imported}; skipped ${summary.duplicates} duplicates; ${summary.invalid} invalid rows."
-        contentItems = dao.contentItems(); contentImports = dao.imports()
     }
-    fun deleteContentImport(id: String) = manage { ContentLibraryRepository(dao).deleteImport(id); contentItems = dao.contentItems(); contentImports = dao.imports() }
-    fun enableContent(item: ContentLibraryItem, enabled: Boolean) = manage { dao.enableContent(item.id, enabled); contentItems = dao.contentItems() }
+    fun deleteContentImport(id: String) = manage { ContentLibraryRepository(dao).deleteImport(id) }
+    fun enableContent(item: ContentLibraryItem, enabled: Boolean) = manage { dao.enableContent(item.id, enabled) }
     private fun manage(block: suspend () -> Unit) {
         if (busy) return
         managing = true
