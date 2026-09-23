@@ -8,8 +8,9 @@ enum class ReelCategory(val label: String, val caption: String) {
 }
 
 object ExportPolicy {
-    const val WIDTH = 1080
-    const val HEIGHT = 1920
+    /** 2K vertical output: 1440x2560 (9:16). */
+    const val WIDTH = 1440
+    const val HEIGHT = 2560
     const val MAX_DURATION_MS = 12_000L
     const val RELATIVE_PATH = "Movies/Upload Reels/"
     fun duration(sourceMs: Long): Long {

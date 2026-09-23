@@ -12,6 +12,9 @@ import androidx.core.app.NotificationCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.work.*
 import com.reelgenerator.data.*
+import com.reelgenerator.analysis.*
+import com.reelgenerator.content.ContentCandidatePlanner
+import com.reelgenerator.planning.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,30 +40,99 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     dao.completeReel(pending.copy(outputUri = output.toString()))
                 }
             }
-            val sources = dao.candidates().map { it.uri }
+            val metadataErrors = mutableListOf<String>()
+            val available = mutableListOf<SourceClip>()
+            val reader = SourceClipReader(applicationContext)
+            // Bounded metadata inspection, no frame analysis/AI in Phase 3A.
+            val sourceVideos = dao.candidates().take(40)
+            sourceVideos.forEach { video ->
+                currentCoroutineContext().ensureActive()
+                try {
+                    update("Reading clip durations… ${available.size + 1}")
+                    available.add(withTimeout(15_000) { reader.read(video) })
+                } catch (_: TimeoutCancellationException) { metadataErrors.add("A video provider took too long to respond.") }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { metadataErrors.add(error.localizedMessage ?: "Could not read video metadata.") }
+            }
+            val sources = available.map { it.uri }
             val saved = dao.reels(batchId).filter { it.outputUri != null }
             val previous = saved.map { BatchOutput(it.sourceUri, requireNotNull(it.outputUri)) }
-            val outcome = runBatch(sources, previous) { slot, source ->
+            val usage = mutableMapOf<String, Int>()
+            suspend fun countUsage(reel: GeneratedReel) {
+                dao.segments(reel.id).map { it.sourceUri }.ifEmpty { listOf(reel.sourceUri) }.distinct().forEach {
+                    usage[it] = (usage[it] ?: 0) + 1
+                }
+            }
+            saved.forEach { countUsage(it) }
+            val planner: ReelPlanner = LocalReelPlanner()
+            val candidatePlanner = ContentCandidatePlanner()
+            val frameProvider = CachedFrameAnalysisProvider(
+                LocalFrameAnalysisProvider(applicationContext),
+                FrameAnalysisCache(applicationContext)
+            )
+            val outcome = runBatch(sources, previous, sourceUseCount = { usage[it] ?: 0 }) { slot, source ->
                 currentCoroutineContext().ensureActive()
                 if (dao.batch(batchId)?.status == "CANCELLED") throw CancellationException()
+                update("Planning reel ${slot + 1} of 5…")
                 val old = dao.reels(batchId).find { it.slot == slot }
-                val reel = GeneratedReel("${batchId}_$slot", batchId, slot, source,
-                    old?.caption ?: PhaseTwoText.caption(category, humor, slot, batchId.hashCode()))
-                dao.saveReel(reel)
-                try {
-                    withTimeout(10 * 60 * 1000L) {
-                        ReelExporter(applicationContext).export(Uri.parse(source), category, reel.caption, reel.id,
-                            onPublished = { uri -> dao.completeReel(reel.copy(outputUri = uri.toString())) }
-                        ) { detail -> update("Reel ${slot + 1} of 5 • $detail") }.toString()
+                val ordered = listOf(available.first { it.uri == source }) + available.filter { it.uri != source }.sortedBy { usage[it.uri] ?: 0 }
+                val request = PlanningRequest("${batchId}_$slot", category, humor, slot, batchId.hashCode(), ordered,
+                    captionOverride = old?.caption?.takeIf { old.planJson == null })
+                val recoveredPlan = old?.planJson?.let { json -> runCatching { ReelPlanCodec.decode(json) }.getOrNull() }
+                    ?.takeIf { plan -> plan.clips.all { it.source.uri in sources } }
+                val planned = recoveredPlan ?: if (old != null && old.planJson == null) {
+                    LocalReelPlanner.legacy(request.id, category, ordered.first(), old.caption)
+                } else candidatePlanner.select(request, dao.contentItems(), sourceVideos, dao.completedCaptions(), usage)
+                val analysis = try {
+                    withTimeout(10_000) {
+                        withContext(Dispatchers.IO) { frameProvider.analyze(FrameAnalysisRequest(Uri.parse(planned.clips.first().source.uri), listOf(0L, planned.clips.first().source.durationMs / 2))) }
                     }
-                } catch (_: TimeoutCancellationException) {
-                    dao.reels(batchId).find { it.id == reel.id }?.outputUri
-                        ?: error("A video took too long to render. Try a shorter source clip.")
+                } catch (_: TimeoutCancellationException) { null }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+                val plan = planned.copy(metadata = planned.metadata.copy(
+                    notes = planned.metadata.notes + "frameAnalysis=${analysis?.provider ?: "unavailable"}; samples=${analysis?.samples?.size ?: 0}"
+                ))
+                suspend fun render(planToRender: ReelPlan): String {
+                    val reel = GeneratedReel(planToRender.id, batchId, slot, planToRender.clips.first().source.uri,
+                        planToRender.textBeats.joinToString("\n") { it.text }, planJson = ReelPlanCodec.encode(planToRender))
+                    dao.savePlannedReel(reel, planToRender.clips.mapIndexed { index, segment ->
+                        GeneratedReelSegment(reel.id, index, segment.source.uri, segment.trimStartMs, segment.trimEndMs, segment.outputStartMs)
+                    })
+                    return try {
+                        withTimeout(10 * 60 * 1000L) {
+                            ReelExporter(applicationContext).export(planToRender,
+                                onPublished = { uri -> dao.completeReel(reel.copy(outputUri = uri.toString())) }
+                            ) { detail -> update("Reel ${slot + 1} of 5 • $detail") }.toString()
+                        }
+                    } catch (_: TimeoutCancellationException) {
+                        dao.reels(batchId).find { it.id == reel.id }?.outputUri ?: error("A reel took too long to render.")
+                    }
                 }
+                val output = try { render(plan) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    // Never replace a completed output/checkpoint with a fallback plan.
+                    val checkpoint = dao.reels(batchId).find { it.id == plan.id }
+                    val published = ReelExporter(applicationContext).recover(category, plan.id)
+                    if (checkpoint != null && published != null) {
+                        dao.completeReel(checkpoint.copy(outputUri = published.toString()))
+                        published.toString()
+                    } else {
+                        if (plan.clips.size == 1) throw error
+                        update("Reel ${slot + 1} of 5 • Retrying with one clip…")
+                        val retry = planner.plan(request.copy(sources = plan.clips.map { it.source }, forceSingle = true,
+                            captionOverride = plan.textBeats.joinToString("\n") { it.text }, scriptBeats = plan.textBeats.map { it.text },
+                            fallbackReason = error.localizedMessage ?: "Composition failed."))
+                        render(retry.copy(concept = plan.concept, metadata = retry.metadata.copy(notes = plan.metadata.notes)))
+                    }
+                }
+                dao.reels(batchId).find { it.slot == slot }?.let { countUsage(it) }
+                output
             }
             val count = outcome.outputs.size
             val folderErrors = dao.folders().filter { it.enabled }.mapNotNull { it.error }
-            val detail = (outcome.errors + folderErrors).firstOrNull()
+            val detail = (outcome.errors + metadataErrors + folderErrors).firstOrNull()
             val message = when {
                 count == 5 -> "5 reels created • Saved to Movies/Upload Reels"
                 sources.isEmpty() -> "$count of 5 reels created. No accessible videos. Add or rescan a source folder."
