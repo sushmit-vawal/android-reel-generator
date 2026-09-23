@@ -106,7 +106,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 model.batch?.let { Text(it.message) }
                                 if (model.reels.isNotEmpty()) OutlinedButton(onClick = { screen = "reels" }, modifier = Modifier.fillMaxWidth()) { Text("View ${model.reels.size} Reels") }
-                                Text("Your videos stay on your phone. Phase 2 uses preset text; choose footage that suits your category.", style = MaterialTheme.typography.bodySmall)
+                                Text("Your videos stay on your phone. Text is locally preset; choose footage that suits your category.", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         if (model.loading || model.managing) LinearProgressIndicator(Modifier.fillMaxWidth())

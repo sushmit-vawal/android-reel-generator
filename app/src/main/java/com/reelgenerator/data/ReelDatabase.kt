@@ -2,6 +2,8 @@ package com.reelgenerator.data
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity
@@ -48,8 +50,14 @@ data class GeneratedReel(
     val slot: Int,
     val sourceUri: String,
     val caption: String,
-    val outputUri: String? = null
+    val outputUri: String? = null,
+    val planJson: String? = null
 )
+
+@Entity(primaryKeys = ["reelId", "position"], indices = [Index("sourceUri")], foreignKeys = [
+    ForeignKey(entity = GeneratedReel::class, parentColumns = ["id"], childColumns = ["reelId"], onDelete = ForeignKey.CASCADE)
+])
+data class GeneratedReelSegment(val reelId: String, val position: Int, val sourceUri: String, val trimStartMs: Long, val trimEndMs: Long, val outputStartMs: Long)
 
 @Entity
 data class AppSettings(@PrimaryKey val id: Int = 1, val category: String = "TRAVEL", val humor: String = "AUTO")
@@ -87,22 +95,40 @@ abstract class ReelDao {
     @Query("SELECT * FROM GeneratedReel WHERE outputUri IS NOT NULL AND batchId=(SELECT id FROM Batch ORDER BY createdAt DESC LIMIT 1) ORDER BY slot")
     abstract fun observeLatestReels(): Flow<List<GeneratedReel>>
     @Upsert abstract suspend fun saveReel(reel: GeneratedReel)
+    @Query("SELECT * FROM GeneratedReelSegment WHERE reelId=:id ORDER BY position") abstract suspend fun segments(id: String): List<GeneratedReelSegment>
+    @Query("DELETE FROM GeneratedReelSegment WHERE reelId=:id") abstract suspend fun clearSegments(id: String)
+    @Insert abstract suspend fun insertSegments(segments: List<GeneratedReelSegment>)
+    @Transaction open suspend fun savePlannedReel(reel: GeneratedReel, segments: List<GeneratedReelSegment>) {
+        saveReel(reel)
+        clearSegments(reel.id)
+        insertSegments(segments)
+    }
     @Query("UPDATE SourceVideo SET useCount=useCount+1, lastUsed=:time WHERE documentKey=(SELECT documentKey FROM SourceVideo WHERE uri=:uri)") abstract suspend fun used(uri: String, time: Long)
     @Transaction open suspend fun completeReel(reel: GeneratedReel) {
         val alreadySaved = reels(reel.batchId).any { it.id == reel.id && it.outputUri != null }
         saveReel(reel)
-        if (!alreadySaved) used(reel.sourceUri, System.currentTimeMillis())
+        if (!alreadySaved) {
+            val sources = segments(reel.id).map { it.sourceUri }.ifEmpty { listOf(reel.sourceUri) }.distinct()
+            sources.forEach { used(it, System.currentTimeMillis()) }
+        }
     }
 }
 
-@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, AppSettings::class], version = 1, exportSchema = true)
+@Database(entities = [SourceFolder::class, SourceVideo::class, FolderVideo::class, Batch::class, GeneratedReel::class, GeneratedReelSegment::class, AppSettings::class], version = 2, exportSchema = true)
 abstract class ReelDatabase : RoomDatabase() {
     abstract fun dao(): ReelDao
     companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE GeneratedReel ADD COLUMN planJson TEXT")
+                db.execSQL("CREATE TABLE IF NOT EXISTS GeneratedReelSegment (reelId TEXT NOT NULL, position INTEGER NOT NULL, sourceUri TEXT NOT NULL, trimStartMs INTEGER NOT NULL, trimEndMs INTEGER NOT NULL, outputStartMs INTEGER NOT NULL, PRIMARY KEY(reelId, position), FOREIGN KEY(reelId) REFERENCES GeneratedReel(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_GeneratedReelSegment_sourceUri ON GeneratedReelSegment(sourceUri)")
+            }
+        }
         @Volatile private var instance: ReelDatabase? = null
         fun get(context: Context): ReelDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, ReelDatabase::class.java, "reelgenerator.db")
-                .build().also { instance = it }
+                .addMigrations(MIGRATION_1_2).build().also { instance = it }
         }
     }
 }

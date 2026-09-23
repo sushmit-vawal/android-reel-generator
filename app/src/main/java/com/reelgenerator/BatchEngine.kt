@@ -11,6 +11,7 @@ data class BatchOutcome(val outputs: List<BatchOutput>, val errors: List<String>
 suspend fun runBatch(
     sources: List<String>,
     previous: List<BatchOutput> = emptyList(),
+    sourceUseCount: ((String) -> Int)? = null,
     render: suspend (slot: Int, source: String) -> String
 ): BatchOutcome {
     require(previous.size <= 5)
@@ -21,7 +22,7 @@ suspend fun runBatch(
     while (outputs.size < 5 && attempts < 20) {
         currentCoroutineContext().ensureActive()
         val source = sources.distinct().filterNot { it in failed }
-            .minByOrNull { candidate -> outputs.count { it.source == candidate } } ?: break
+            .minByOrNull { candidate -> sourceUseCount?.invoke(candidate) ?: outputs.count { it.source == candidate } } ?: break
         attempts++
         try { outputs.add(BatchOutput(source, render(outputs.size, source))) }
         catch (cancelled: CancellationException) { throw cancelled }
