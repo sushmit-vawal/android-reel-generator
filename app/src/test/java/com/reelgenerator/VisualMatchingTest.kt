@@ -45,6 +45,11 @@ class VisualMatchingTest {
         assertFalse(score.eligible)
         assertTrue(intent("Well that went brilliantly", ReelCategory.HUMOR).subjects.isEmpty())
     }
+    @Test fun beachWorkoutRequiresActivityNotJustTheBeachSetting() {
+        val wanted = intent("A beach workout worth showing up for", ReelCategory.MOTIVATION)
+        assertFalse(VisualScorer.score(wanted, section("beach", energy = .6), 0, false, MatchPolicy()).eligible)
+        assertTrue(VisualScorer.score(wanted, section("exercise", energy = .6), 0, false, MatchPolicy()).eligible)
+    }
     @Test fun workTransitionPayoffIntentAndTemporalSequence() {
         val texts = listOf("Some days I work hard.", "Then I remember...", "This is what I am buying back.")
         val intents = VisualVocabulary.intents(texts, "", "", ReelCategory.TRAVEL)

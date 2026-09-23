@@ -91,6 +91,9 @@ object VisualVocabulary {
             val everydayIdea = category == ReelCategory.LIFESTYLE && listOf("routine", "ordinary", "little things", "everyday", "weekend", "simple").any { it in normalized }
             val role = when { index == 0 -> "setup"; index == beats.lastIndex -> "payoff"; else -> "transition" }
             val inferred = when {
+                // Activity is essential; a beach label alone cannot satisfy "beach workout".
+                "fitness" in explicit -> setOf("fitness")
+                "work" in explicit -> setOf("work")
                 explicit.isNotEmpty() -> explicit
                 workTravel && role == "transition" -> setOf("airport", "road")
                 workTravel && role == "payoff" -> setOf("ocean", "mountain")
