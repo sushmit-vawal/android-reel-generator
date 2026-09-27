@@ -24,11 +24,18 @@ import androidx.media3.common.util.UnstableApi
 import java.text.DateFormat
 import java.util.Date
 import com.reelgenerator.data.ContentLibraryItem
+import androidx.work.*
+import com.reelgenerator.trend.TrendRefreshWorker
+import java.util.concurrent.TimeUnit
 
 @UnstableApi
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork("trend-refresh", ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<TrendRefreshWorker>(24, TimeUnit.HOURS).setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).setRequiresBatteryNotLow(true).build()
+            ).build())
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFBEF264), background = Color(0xFF101410), surface = Color(0xFF1C241C))) {
                 val model: ReelViewModel = viewModel()
