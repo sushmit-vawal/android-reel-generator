@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFBEF264), background = Color(0xFF101410), surface = Color(0xFF1C241C))) {
                 val model: ReelViewModel = viewModel()
                 var screen by rememberSaveable { mutableStateOf("home") }
+                var customPrompt by rememberSaveable { mutableStateOf("") }
                 var visibleContent by rememberSaveable { mutableIntStateOf(50) }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) model.addFolder(uri) }
                 val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) model.importContent(uri) }
@@ -54,7 +55,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     Column(Modifier.safeDrawingPadding().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Spacer(Modifier.height(12.dp))
-                        Text(if (screen == "folders") "SOURCE FOLDERS" else if (screen == "reels") "YOUR REELS" else if (screen == "content") "CONTENT LIBRARY" else "REEL GENERATOR", style = MaterialTheme.typography.headlineLarge)
+                        Text(if (screen == "folders") "SOURCE FOLDERS" else if (screen == "reels") "YOUR REELS" else if (screen == "content") "CONTENT LIBRARY" else if (screen == "custom") "CUSTOM REEL" else "REEL GENERATOR", style = MaterialTheme.typography.headlineLarge)
                         if (screen != "home") TextButton(onClick = { screen = "home" }) { Text("Back") }
                         when (screen) {
                             "folders" -> {
@@ -118,6 +119,12 @@ class MainActivity : ComponentActivity() {
                                 }
                                 if (visibleContent < model.contentItems.size) TextButton(onClick = { visibleContent += 50 }) { Text("Show more rows") }
                             }
+                            "custom" -> {
+                                Text("Describe the reel you want. Mention visual order, mood, pacing, or exact text with || between beats.")
+                                OutlinedTextField(value = customPrompt, onValueChange = { customPrompt = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp), label = { Text("Describe the reel you want") }, placeholder = { Text("Start with office clips, then airport and ocean. Make it cinematic.") })
+                                Button(onClick = { model.generateCustom(customPrompt); screen = "home" }, enabled = !model.busy && customPrompt.isNotBlank() && model.folders.any { it.enabled }, modifier = Modifier.fillMaxWidth().height(58.dp)) { Text("CREATE CUSTOM REEL") }
+                                Text("CSV is optional. Exact text is preserved; visual-only prompts receive original text matched to your footage.", style = MaterialTheme.typography.bodySmall)
+                            }
                             else -> {
                                 Text("Your videos. Five moments to share.", style = MaterialTheme.typography.bodyLarge)
                                 Text("SOURCE FOLDERS", style = MaterialTheme.typography.labelLarge)
@@ -125,6 +132,7 @@ class MainActivity : ComponentActivity() {
                                 else model.folders.forEach { Text("${it.name}${if (it.enabled) "" else " (disabled)"}") }
                                 OutlinedButton(onClick = { screen = "folders" }, modifier = Modifier.fillMaxWidth()) { Text("Select / Manage Folders") }
                                 OutlinedButton(onClick = { screen = "content" }, modifier = Modifier.fillMaxWidth()) { Text("Content Library") }
+                                OutlinedButton(onClick = { screen = "custom" }, enabled = !model.busy, modifier = Modifier.fillMaxWidth()) { Text("Custom Reel") }
                                 Text("REEL TYPE", style = MaterialTheme.typography.labelLarge)
                                 Choice(model.category.label, ReelCategory.entries.map { it.label }, !model.busy) { label -> model.choose(ReelCategory.entries.first { it.label == label }) }
                                 if (model.category == ReelCategory.HUMOR) {

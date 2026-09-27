@@ -117,6 +117,16 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
             finally { scheduling = false }
         }
     }
+    fun generateCustom(prompt: String) {
+        if (busy || folders.none { it.enabled } || prompt.isBlank()) return
+        scheduling = true; message = ""
+        val request = OneTimeWorkRequestBuilder<CustomReelWorker>().setInputData(workDataOf("prompt" to prompt)).build()
+        viewModelScope.launch {
+            try { work.enqueueUniqueWork("custom-reel", ExistingWorkPolicy.REPLACE, request).await(); workActive = true }
+            catch (error: Exception) { message = "Could not start custom reel. ${error.localizedMessage}" }
+            finally { scheduling = false }
+        }
+    }
     fun cancel() {
         viewModelScope.launch {
             val infos = work.getWorkInfosForUniqueWorkFlow(BatchWorker.WORK_NAME).first()
