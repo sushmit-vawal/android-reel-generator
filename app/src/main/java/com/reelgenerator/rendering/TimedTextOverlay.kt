@@ -2,7 +2,6 @@ package com.reelgenerator.rendering
 
 import android.graphics.*
 import android.text.Layout
-import android.text.StaticLayout
 import android.text.TextPaint
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
@@ -20,33 +19,29 @@ class TimedTextOverlay(private val plan: ReelPlan) : BitmapOverlay() {
         val index = plan.textBeats.indexOfFirst { timeMs >= it.startMs && timeMs < it.endMs }
         if (index != lastIndex) {
             frame.eraseColor(Color.TRANSPARENT)
-            if (index >= 0) drawText(frame, plan.textBeats[index].text)
+            if (index >= 0) drawText(frame, plan.textBeats[index])
             lastIndex = index
         }
         return frame
     }
-    private fun drawText(frame: Bitmap, text: String) {
+    private fun drawText(frame: Bitmap, beat: com.reelgenerator.planning.TextBeat) {
         val canvas = Canvas(frame)
+        val fitted = TextLayoutEngine.fit(beat.text, plan.textStyle)
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; textSize = plan.textStyle.fontSizePx
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setShadowLayer(5f, 0f, 3f, Color.BLACK)
+            color = plan.textStyle.foregroundColor; textSize = fitted.sizePx
+            typeface = Typeface.create(plan.textStyle.typeface, Typeface.BOLD)
+            when (plan.textStyle.treatment) { com.reelgenerator.planning.TextTreatment.SHADOW, com.reelgenerator.planning.TextTreatment.DIRECT -> Unit
+                else -> setShadowLayer(5f, 0f, 3f, Color.BLACK) }
         }
-        val contentWidth = (ExportPolicy.WIDTH * 0.778f).toInt()
-        fun layout() = StaticLayout.Builder.obtain(text, 0, text.length, paint, contentWidth)
-            .setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(12f, 1f).setIncludePad(false).build()
-        var textLayout = layout()
-        val maxTextHeight = (ExportPolicy.HEIGHT * 0.333f).toInt()
-        while (textLayout.height > maxTextHeight && paint.textSize > 40f) { paint.textSize -= 2; textLayout = layout() }
-        check(textLayout.height <= maxTextHeight) { "Caption cannot fit within the text area." }
-        val top = (ExportPolicy.HEIGHT - textLayout.height) / 2f
-        // Retain the physically verified Phase 2 treatment. Visual redesign is Phase 3C.
-        val side = ExportPolicy.WIDTH * 0.0815f
-        val inset = ExportPolicy.WIDTH * 0.0296f
-        val radius = ExportPolicy.WIDTH * 0.0222f
-        canvas.drawRoundRect(side, top - inset, ExportPolicy.WIDTH - side, top + textLayout.height + inset, radius, radius,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(175, 12, 15, 22) })
-        canvas.save(); canvas.translate(ExportPolicy.WIDTH * 0.111f, top); textLayout.draw(canvas); canvas.restore()
+        val top = fitted.bounds.top + (fitted.bounds.height() - fitted.layout.height) * plan.textStyle.placementY.coerceIn(0f, 1f)
+        val left = fitted.bounds.left + (fitted.bounds.width() - fitted.layout.width) * plan.textStyle.placementX.coerceIn(0f, 1f)
+        val treatment = plan.textStyle.treatment
+        if (treatment == com.reelgenerator.planning.TextTreatment.BACKDROP || treatment == com.reelgenerator.planning.TextTreatment.GRADIENT) {
+            val inset = ExportPolicy.WIDTH * .018f
+            canvas.drawRoundRect(left - inset, top - inset, left + fitted.layout.width + inset, top + fitted.layout.height + inset, inset, inset,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(if (treatment == com.reelgenerator.planning.TextTreatment.GRADIENT) 90 else 115, 8, 12, 18) })
+        }
+        canvas.save(); canvas.translate(left, top); fitted.layout.paint.color = paint.color; fitted.layout.draw(canvas); canvas.restore()
     }
     override fun release() {
         try { super.release() } finally { bitmap?.recycle(); bitmap = null; lastIndex = Int.MIN_VALUE }

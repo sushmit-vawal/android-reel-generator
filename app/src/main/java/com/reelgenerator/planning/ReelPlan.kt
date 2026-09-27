@@ -2,6 +2,7 @@ package com.reelgenerator.planning
 
 import com.reelgenerator.HumorStyle
 import com.reelgenerator.ReelCategory
+import android.graphics.RectF
 import kotlin.math.ceil
 
 data class SourceClip(val id: String, val uri: String, val durationMs: Long, val width: Int, val height: Int)
@@ -10,8 +11,29 @@ data class ReelClipSegment(val source: SourceClip, val trimStartMs: Long, val tr
     val outputEndMs get() = outputStartMs + durationMs
 }
 data class TextBeat(val text: String, val startMs: Long, val endMs: Long, val emphasis: List<String> = emptyList())
-enum class TypographyPreset { CLEAN }
-data class TextStyle(val preset: TypographyPreset = TypographyPreset.CLEAN, val fontSizePx: Float = 64f)
+enum class TypographyPreset { CLEAN, CINEMATIC, IMPACT, MINIMAL, SOCIAL, HUMOR }
+enum class TextAlignment { LEFT, CENTER, RIGHT }
+enum class TextTreatment { DIRECT, SHADOW, OUTLINE, GRADIENT, BACKDROP }
+data class SafeAreaConfig(
+    val left: Float = .10f, val top: Float = .13f, val right: Float = .10f, val bottom: Float = .16f,
+    val rightControls: Float = .08f
+) {
+    fun contentWidth(width: Int) = (width * (1f - left - right - rightControls)).toInt()
+    fun bounds(width: Int, height: Int) = RectF(width * left, height * top, width * (1f - right - rightControls), height * (1f - bottom))
+}
+data class TextStyle(
+    val preset: TypographyPreset = TypographyPreset.CLEAN,
+    val fontSizePx: Float = 64f,
+    val typeface: String = "sans-serif",
+    val alignment: TextAlignment = TextAlignment.CENTER,
+    val treatment: TextTreatment = TextTreatment.BACKDROP,
+    val foregroundColor: Int = 0xffffffff.toInt(),
+    val emphasisColor: Int = 0xffffd166.toInt(),
+    val lineCount: Int = 0,
+    val placementX: Float = .5f,
+    val placementY: Float = .5f,
+    val safeArea: SafeAreaConfig = SafeAreaConfig()
+)
 enum class Pacing { CALM, STEADY, QUICK }
 data class GenerationMetadata(
     val plannerVersion: String,
@@ -39,7 +61,7 @@ data class ReelPlan(
     val durationMs get() = clips.lastOrNull()?.outputEndMs ?: 0L
     fun beatAt(timeMs: Long): TextBeat? = textBeats.firstOrNull { timeMs >= it.startMs && timeMs < it.endMs }
     fun validated(): ReelPlan = apply {
-        require(version == 1) { "Unsupported reel plan version." }
+        require(version == 1 || version == 2) { "Unsupported reel plan version." }
         require(id.matches(Regex("[A-Za-z0-9_-]{1,100}"))) { "Invalid reel identifier." }
         require(clips.size in 1..5 && textBeats.size in 1..6) { "A plan needs 1–5 clips and 1–6 text beats." }
         var cursor = 0L

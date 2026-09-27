@@ -97,10 +97,11 @@ class VisualPlanMatcher(private val policy: MatchPolicy = MatchPolicy()) {
         val mean = (best.score / best.picks.size).coerceIn(0.0, 1.0)
         return VisualPlanResult(ReelPlan(request.id, request.category, request.humor, candidate.concept,
             intents.last().desiredMood, candidate.beats.first(), clips, beats,
+            textStyle = PresentationPlanner.choose(request.category, candidate.beats.joinToString(" "), request.seed, request.slot),
             pacing = if (intents.map { it.desiredEnergy }.average() < .3) Pacing.CALM else Pacing.STEADY,
             payoff = candidate.beats.last(), qualityScore = mean,
             metadata = GenerationMetadata("visual-sequence-v1", request.seed, System.currentTimeMillis(),
-                listOf("textSource=${candidate.source}", "matching=sampled-image-labels-and-vibe", "visualMatch=$debug") + listOfNotNull(candidate.itemId?.let { "contentItemId=$it" }))
+                listOf("textSource=${candidate.source}", "matching=sampled-image-labels-and-vibe", "visualMatch=$debug") + listOfNotNull(candidate.itemId?.let { "contentItemId=$it" })), version = 2
         ).validated(), mean)
     }
 }

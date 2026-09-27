@@ -68,9 +68,10 @@ class LocalReelPlanner : ReelPlanner {
         return ReelPlan(request.id, request.category, request.humor,
             concept = caption.replace('\n', ' '), emotionalAngle = "Local category test concept",
             hook = texts.first(), clips = segments, textBeats = beats,
+            textStyle = PresentationPlanner.choose(request.category, caption, request.seed, request.slot),
             pacing = if (segments.size > 2) Pacing.QUICK else Pacing.STEADY, payoff = texts.last(),
             metadata = GenerationMetadata("local-timeline-3a-v1", request.seed, System.currentTimeMillis(),
-                listOf("Preset text; footage has not been semantically analyzed.", "Trim points are duration-based, not scene detection."), request.fallbackReason)
+                listOf("Preset text; footage has not been semantically analyzed.", "Trim points are duration-based, not scene detection."), request.fallbackReason), version = 2
         ).validated()
     }
 
@@ -80,7 +81,7 @@ class LocalReelPlanner : ReelPlanner {
             val duration = minOf(clip.durationMs, 12_000L)
             return ReelPlan(id, category, HumorStyle.AUTO, caption, "Legacy preset", caption,
                 listOf(ReelClipSegment(clip, 0, duration, 0)), listOf(TextBeat(caption, 0, duration)), payoff = caption,
-                metadata = GenerationMetadata("legacy-single-clip", 0, System.currentTimeMillis())).validated()
+                metadata = GenerationMetadata("legacy-single-clip", 0, System.currentTimeMillis()), version = 2).validated()
         }
     }
 }
