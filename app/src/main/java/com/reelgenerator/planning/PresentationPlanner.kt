@@ -21,10 +21,9 @@ object PresentationPlanner {
             else -> TextTreatment.BACKDROP
         }
         val typeface = when (preset) { TypographyPreset.CINEMATIC -> "serif"; TypographyPreset.SOCIAL -> "sans-serif-medium"; TypographyPreset.HUMOR -> "sans-serif-condensed"; else -> "sans-serif" }
-        val darkText = brightness != null && brightness > .62
         return TextStyle(preset, when (preset) { TypographyPreset.IMPACT -> 72f; TypographyPreset.MINIMAL -> 58f; else -> 64f },
-            typeface = typeface, alignment = alignment, treatment = if (darkText) TextTreatment.OUTLINE else treatment,
-            foregroundColor = if (darkText) 0xff101820.toInt() else 0xffffffff.toInt(), emphasisColor = if (darkText) 0xffb54708.toInt() else 0xffffd166.toInt(),
+            typeface = typeface, alignment = alignment, treatment = if (brightness != null && brightness > .62) TextTreatment.OUTLINE else treatment,
+            foregroundColor = 0xffffffff.toInt(), emphasisColor = 0xffffffff.toInt(),
             lineCount = if (text.length > 80) 3 else 2)
     }
 }
