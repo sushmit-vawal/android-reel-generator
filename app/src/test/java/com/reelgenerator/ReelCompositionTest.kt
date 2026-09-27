@@ -21,7 +21,7 @@ class ReelCompositionTest {
     @Test fun serializedPlanRoundTripsExactly() {
         val plan = plan().copy(qualityScore = null, textBeats = plan().textBeats.map { it.copy(emphasis = listOf(it.text.split(" ").first())) })
         assertEquals(plan, ReelPlanCodec.decode(ReelPlanCodec.encode(plan)))
-        assertTrue(runCatching { ReelPlanCodec.decode(ReelPlanCodec.encode(plan).replace("\"version\":1", "\"version\":99")) }.isFailure)
+        assertTrue(runCatching { ReelPlanCodec.decode(ReelPlanCodec.encode(plan).replace("\"version\":2", "\"version\":99")) }.isFailure)
     }
     @Test fun compositionHasOneSequenceCorrectTrimsNoAudioAndGlobalOverlay() {
         val plan = plan()
