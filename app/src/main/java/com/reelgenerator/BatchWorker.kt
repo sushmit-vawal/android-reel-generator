@@ -13,7 +13,6 @@ import androidx.work.*
 import com.reelgenerator.data.*
 import com.reelgenerator.analysis.*
 import com.reelgenerator.content.ContentCandidatePlanner
-import com.reelgenerator.content.NoVisualMatchException
 import com.reelgenerator.planning.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -44,11 +43,11 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             val sourceVideos = dao.candidates()
             val index = LibraryVisualIndex(applicationContext, dao, sourceVideos).also { visualIndex = it }
             index.load(batchId.hashCode())
-            // Every batch explores another fair, randomized page. All cached clips remain eligible.
+            // Every cached clip and every filename-indexed clip is immediately searchable. A
+            // bounded page of new clips receives full visual analysis before set selection.
             index.expand(progress = ::update)
             val sources = sourceVideos.map { it.uri }
             val saved = dao.reels(batchId).filter { it.outputUri != null }
-            val previous = saved.map { BatchOutput(it.sourceUri, requireNotNull(it.outputUri)) }
             val usage = mutableMapOf<String, Int>()
             suspend fun countUsage(reel: GeneratedReel) {
                 dao.segments(reel.id).map { it.sourceUri }.ifEmpty { listOf(reel.sourceUri) }.distinct().forEach {
@@ -58,37 +57,64 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             saved.forEach { countUsage(it) }
             val candidatePlanner = ContentCandidatePlanner()
             val unusable = mutableSetOf<String>()
-            val outcome = runBatch(sources, previous, sourceUseCount = { usage[it] ?: 0 }) { slot, _ ->
+            val errors = mutableListOf<String>()
+            val queues = mutableMapOf<Int, ArrayDeque<VisualPlanResult>>()
+            val plannedSlots = (0 until 5).filter { slot -> saved.none { it.slot == slot } }
+
+            suspend fun candidatePool(slot: Int): List<VisualPlanResult> {
                 currentCoroutineContext().ensureActive()
                 if (dao.batch(batchId)?.status == "CANCELLED") throw CancellationException()
-                update("Planning reel ${slot + 1} of 5…")
+                update("Planning five reels together • candidate ${slot + 1} of 5…")
                 val old = dao.reels(batchId).find { it.slot == slot }
-                val ordered = index.sources.values.filterNot { it.uri in unusable }
-                val request = PlanningRequest("${batchId}_$slot", category, humor, slot, batchId.hashCode(), ordered,
+                val available = index.sources.values.filterNot { it.uri in unusable }
+                val request = PlanningRequest("${batchId}_$slot", category, humor, slot, batchId.hashCode(), available,
                     captionOverride = old?.caption?.takeIf { old.planJson == null })
                 val recoveredPlan = old?.planJson?.let { json -> runCatching { ReelPlanCodec.decode(json) }.getOrNull() }
                     ?.takeIf { plan -> plan.clips.all { it.source.uri in sources && it.source.uri !in unusable } }
-                suspend fun choosePlan(): ReelPlan {
-                    while (true) {
-                        try {
-                            return candidatePlanner.select(request.copy(sources = index.sources.values.filterNot { it.uri in unusable }),
-                                dao.contentItems(), sourceVideos, dao.completedCaptions(), usage, index.analyses, dao.recentPairings())
-                        } catch (noMatch: NoVisualMatchException) {
-                            if (index.remaining == 0) throw noMatch
-                            update("Looking for a better match in more folders…")
-                            index.expand(progress = ::update)
-                        } finally {
-                            // App-private development diagnostics, never included in normal UI or shared.
-                            withContext(Dispatchers.IO) { runCatching {
-                                java.io.File(applicationContext.filesDir, "visual-match-debug.txt").writeText(candidatePlanner.diagnostics.joinToString("\n"))
-                            } }
-                        }
-                    }
+                if (recoveredPlan != null) return listOf(VisualPlanResult(recoveredPlan, 2.0))
+                if (old != null && old.planJson == null && available.isNotEmpty()) {
+                    return listOf(VisualPlanResult(LocalReelPlanner.legacy(request.id, category, available.first(), old.caption), 1.5))
                 }
-                val plan = recoveredPlan ?: if (old != null && old.planJson == null && ordered.isNotEmpty()) {
-                    LocalReelPlanner.legacy(request.id, category, ordered.first(), old.caption)
-                } else choosePlan()
-                suspend fun render(planToRender: ReelPlan): String {
+                return candidatePlanner.candidates(request, dao.contentItems(), sourceVideos, dao.completedCaptions(),
+                    usage, index.analyses, dao.recentPairings(), 20)
+            }
+
+            suspend fun planAsSet() {
+                var pools = plannedSlots.map { candidatePool(it) }
+                while (pools.any { it.isEmpty() } && index.remaining > 0) {
+                    update("Expanding visual coverage across all folders…")
+                    index.expand(progress = ::update)
+                    pools = plannedSlots.map { candidatePool(it) }
+                }
+                // Filename evidence makes the whole indexed library searchable. Analyze any
+                // selected hint before final scoring/rendering, then choose the set again.
+                val hinted = BatchPlanSelector.select(pools, plannedSlots.size).selected.flatMap { it.plan.clips }
+                    .filter { index.analyses[it.source.uri]?.provider == "indexed-metadata-hint" }.map { it.source.uri }.distinct()
+                if (hinted.isNotEmpty()) {
+                    index.ensureAnalyzed(hinted, ::update)
+                    pools = plannedSlots.map { candidatePool(it) }
+                }
+                val selection = BatchPlanSelector.select(pools, plannedSlots.size)
+                plannedSlots.forEachIndexed { position, slot ->
+                    val chosen = selection.selected.getOrNull(position)
+                    queues[slot] = ArrayDeque(buildList {
+                        if (chosen != null) add(chosen)
+                        addAll(selection.reserves[position].orEmpty().filter { it != chosen })
+                    })
+                }
+                val snapshot = index.snapshot()
+                val diagnostic = buildList {
+                    add("snapshot discovered=${snapshot.totalVideosDiscovered} indexed=${snapshot.indexedVideos} analyzed=${snapshot.analyzedVideos} pending=${snapshot.videosNeedingAnalysis} segments=${snapshot.eligibleTemporalSegments}")
+                    add("folders=${snapshot.folderVideoCounts}")
+                    add("excluded=${snapshot.excludedVideos.groupingBy { it.reason }.eachCount()}")
+                    add("selected=${selection.selected.map { result -> result.plan.metadata.notes + result.plan.clips.map { it.source.uri } }}")
+                    add("reserves=${selection.reserves.mapValues { it.value.size }}")
+                    addAll(candidatePlanner.diagnostics)
+                }.joinToString("\n")
+                withContext(Dispatchers.IO) { runCatching { java.io.File(applicationContext.filesDir, "visual-match-debug.txt").writeText(diagnostic) } }
+            }
+
+            suspend fun render(slot: Int, planToRender: ReelPlan): String {
                     val reel = GeneratedReel(planToRender.id, batchId, slot, planToRender.clips.first().source.uri,
                         planToRender.textBeats.joinToString("\n") { it.text }, planJson = ReelPlanCodec.encode(planToRender))
                     dao.savePlannedReel(reel, planToRender.clips.mapIndexed { index, segment ->
@@ -103,30 +129,50 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     } catch (_: TimeoutCancellationException) {
                         dao.reels(batchId).find { it.id == reel.id }?.outputUri ?: error("A reel took too long to render.")
                     }
+            }
+
+            planAsSet()
+            var attempts = 0
+            while (dao.reels(batchId).count { it.outputUri != null } < 5 && attempts++ < 50) {
+                currentCoroutineContext().ensureActive()
+                val slot = (0 until 5).firstOrNull { candidate -> dao.reels(batchId).none { it.slot == candidate && it.outputUri != null } } ?: break
+                var candidate = queues[slot]?.removeFirstOrNull()
+                if (candidate == null && index.remaining > 0) {
+                    index.expand(progress = ::update)
+                    candidate = candidatePool(slot).firstOrNull()
                 }
-                val output = try { render(plan) }
-                catch (cancelled: CancellationException) { throw cancelled }
+                if (candidate == null) { errors += "No viable reserve plan remained for reel ${slot + 1}."; break }
+                val hinted = candidate.plan.clips.filter { index.analyses[it.source.uri]?.provider == "indexed-metadata-hint" }.map { it.source.uri }
+                if (hinted.isNotEmpty()) {
+                    index.ensureAnalyzed(hinted, ::update)
+                    queues[slot] = ArrayDeque(candidatePool(slot))
+                    continue
+                }
+                update("Rendering reel ${slot + 1} of 5…")
+                try {
+                    render(slot, candidate.plan)
+                    dao.reels(batchId).find { it.slot == slot }?.let { countUsage(it) }
+                } catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) {
-                    // Never replace a completed output/checkpoint with a fallback plan.
-                    val checkpoint = dao.reels(batchId).find { it.id == plan.id }
-                    val published = ReelExporter(applicationContext).recover(category, plan.id)
+                    val checkpoint = dao.reels(batchId).find { it.id == candidate.plan.id }
+                    val published = ReelExporter(applicationContext).recover(category, candidate.plan.id)
                     if (checkpoint != null && published != null) {
                         dao.completeReel(checkpoint.copy(outputUri = published.toString()))
-                        published.toString()
+                        countUsage(checkpoint)
                     } else {
-                        // Do not flatten a matched narrative onto an arbitrary first clip after an export error.
-                        unusable.addAll(plan.clips.map { it.source.uri })
-                        throw error
+                        val failedSources = candidate.plan.clips.map { it.source.uri }.toSet()
+                        unusable += failedSources
+                        queues.values.forEach { queue -> queue.removeAll { reserve -> reserve.plan.clips.any { it.source.uri in failedSources } } }
+                        errors += "Reel ${slot + 1} source failed: ${error.localizedMessage ?: "export error"}"
                     }
                 }
-                dao.reels(batchId).find { it.slot == slot }?.let { countUsage(it) }
-                output
             }
-            val count = outcome.outputs.size
+            val count = dao.reels(batchId).count { it.outputUri != null }
+            val snapshot = index.snapshot()
             val folderErrors = dao.folders().filter { it.enabled }.mapNotNull { it.error }
-            val detail = (outcome.errors + index.errors + folderErrors).firstOrNull()
+            val detail = (errors + index.errors + folderErrors).firstOrNull()
             val message = when {
-                count == 5 -> "5 reels created • Saved to Movies/Upload Reels • ${index.analyses.size}/${sourceVideos.size} videos indexed; more explored next batch"
+                count == 5 -> "5 reels created • Saved to Movies/Upload Reels • ${snapshot.indexedVideos}/${snapshot.totalVideosDiscovered} searchable, ${snapshot.analyzedVideos} fully analyzed"
                 sources.isEmpty() -> "$count of 5 reels created. No accessible videos. Add or rescan a source folder."
                 else -> "$count of 5 reels created. ${detail ?: "No more usable source videos."}"
             }

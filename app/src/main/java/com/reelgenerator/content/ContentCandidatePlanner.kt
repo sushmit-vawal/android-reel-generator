@@ -13,7 +13,6 @@ import kotlinx.coroutines.ensureActive
 import kotlin.random.Random
 
 data class TextCandidate(val beats: List<String>, val concept: String, val source: String, val itemId: String? = null, val tags: String = "", val preferredClips: Int? = null)
-/** Optional real text model adapter. Shipping build uses CSV and explicitly named templates. */
 fun interface TextGenerator { suspend fun generate(category: ReelCategory, humor: HumorStyle, seed: Int): List<TextCandidate> }
 
 object TextIdentity {
@@ -30,38 +29,76 @@ class NoVisualMatchException(message: String) : IllegalStateException(message)
 
 class ContentCandidatePlanner(private val generator: TextGenerator = TextGenerator { _, _, _ -> emptyList() }, private val policy: MatchPolicy = MatchPolicy()) {
     val diagnostics = mutableListOf<String>()
-    suspend fun select(request: PlanningRequest, items: List<ContentLibraryItem>, videos: List<SourceVideo>, history: List<String>, batchUsage: Map<String, Int>,
-                       analyses: Map<String, ClipAnalysis> = emptyMap(), pairings: List<ReelPairingHistory> = emptyList()): ReelPlan {
+
+    suspend fun candidates(request: PlanningRequest, items: List<ContentLibraryItem>, videos: List<SourceVideo>, history: List<String>, batchUsage: Map<String, Int>,
+                           analyses: Map<String, ClipAnalysis>, pairings: List<ReelPairingHistory>, limit: Int = 20): List<VisualPlanResult> {
         diagnostics.clear()
-        val imported = items.filter { it.enabled && (it.category.equals(request.category.name, true) || it.category.equals("Uncategorized", true) || it.category.isBlank()) }
+        val library = items.filter { it.enabled && (it.category.equals(request.category.name, true) || it.category.equals("Uncategorized", true) || it.category.isBlank()) }
             .mapNotNull { item -> try {
                 val array = JSONArray(item.beatsJson)
                 TextCandidate((0 until array.length()).map(array::getString), item.subTheme.ifBlank { item.category }, item.sourceType, item.id, item.tags, item.preferredClipCount)
             } catch (_: Exception) { null } }
-        val ai = try { generator.generate(request.category, request.humor, request.seed).filter { it.source == "AI_GENERATED" } }
-            catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { emptyList() }
         val normalizedHistory = history.map(TextIdentity::normalize).toSet()
-        var used = 0; var deferred = 0
         val matcher = VisualPlanMatcher(policy)
-        suspend fun evaluate(candidates: List<TextCandidate>): List<VisualPlanResult> {
-            val plans = mutableListOf<VisualPlanResult>()
-            candidates.distinctBy { TextIdentity.normalize(it.beats.joinToString(" ")) }.forEach { candidate ->
+        suspend fun evaluate(input: List<TextCandidate>, allowHistorical: Boolean, sourcePenalty: Double = 0.0): List<VisualPlanResult> {
+            val out = mutableListOf<VisualPlanResult>()
+            input.distinctBy { TextIdentity.normalize(it.beats.joinToString(" ")) }.forEach { candidate ->
                 currentCoroutineContext().ensureActive()
                 val text = candidate.beats.joinToString(" ")
-                if (TextIdentity.normalize(text) in normalizedHistory || history.any { TextIdentity.similarity(text, it) >= .96 }) { used++; return@forEach }
-                val plan = matcher.match(request, candidate, analyses, videos, batchUsage, pairings, diagnostics)
-                if (plan != null) plans.add(plan) else deferred++
+                val identity = TextIdentity.normalize(text)
+                val historical = identity in normalizedHistory || history.any { TextIdentity.similarity(text, it) >= .96 }
+                if (historical && !allowHistorical) return@forEach
+                val result = matcher.match(request, candidate, analyses, videos, batchUsage, pairings, diagnostics) ?: return@forEach
+                if (historical && candidate.itemId != null && !usesNewInterpretation(result.plan, identity, pairings)) return@forEach
+                out += result.copy(score = result.score - sourcePenalty - if (historical) .06 else 0.0)
             }
-            return plans
+            return out
         }
-        var plans = evaluate(imported)
-        val importedUsed = used
-        val importedDeferred = deferred
-        if (plans.isEmpty()) plans = evaluate(ai)
-        if (plans.isEmpty()) plans = evaluate((0..4).map { TextCandidate(listOf(PhaseTwoText.caption(request.category, request.humor, it, request.seed)), request.category.label, "BUILT_IN_FALLBACK") })
-        if (plans.isEmpty()) plans = evaluate(VideoFirstTemplates.candidates(request.category, analyses.values.toList()))
-        if (plans.isEmpty()) throw NoVisualMatchException("${imported.size} library rows in this category: $importedUsed already used, $importedDeferred need suitable footage or shorter text. No fresh fallback fits. ${analyses.size} videos analyzed. Try another category or review row lengths/tags in Content Library.")
+        val freshImported = evaluate(library, false)
+        val reusedImported = evaluate(library, true).filter { result ->
+            result.plan.metadata.notes.any { it.startsWith("contentItemId=") } && freshImported.none { it.plan.textBeats.map(TextBeat::text) == result.plan.textBeats.map(TextBeat::text) }
+        }
+        val ai = try { generator.generate(request.category, request.humor, request.seed).filter { it.source == "AI_GENERATED" } }
+            catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { emptyList() }
+        val groups = listOf(
+            freshImported,
+            reusedImported,
+            evaluate(ai, false, .01),
+            evaluate(DynamicLocalTextGenerator.candidates(request.category, analyses.values, request.seed), false, .02),
+            evaluate(VideoFirstTemplates.candidates(request.category, analyses.values.toList()), false, .03),
+            evaluate(EmergencyText.candidates(request.category, request.seed), false, .05),
+            evaluate((0..4).map { TextCandidate(listOf(PhaseTwoText.caption(request.category, request.humor, it, request.seed)), request.category.label, "LEGACY_EMERGENCY") }, true, .09)
+        )
+        diagnostics += "candidateCounts=${groups.map { it.size }}"
+        // The pipeline order is intentional. A large tier bonus keeps a visually valid
+        // imported row ahead of generated material while relevance still ranks peers inside
+        // the same tier. Later tiers only fill the pool when earlier ones are insufficient.
+        return groups.flatMapIndexed { tier, results ->
+            results.sortedByDescending(VisualPlanResult::score).map { it.copy(score = it.score + (groups.size - tier) * 2.0) }
+        }
+            .distinctBy { TextIdentity.normalize(it.plan.textBeats.joinToString(" ") { beat -> beat.text }) }.take(limit)
+    }
+
+    suspend fun select(request: PlanningRequest, items: List<ContentLibraryItem>, videos: List<SourceVideo>, history: List<String>, batchUsage: Map<String, Int>,
+                       analyses: Map<String, ClipAnalysis> = emptyMap(), pairings: List<ReelPairingHistory> = emptyList()): ReelPlan {
+        val plans = candidates(request, items, videos, history, batchUsage, analyses, pairings)
+        if (plans.isEmpty()) throw NoVisualMatchException("No readable visual/text plan fits ${analyses.size} indexed videos. The batch will continue with another source or local creative fallback.")
         val top = plans.maxOf { it.score }
         return plans.filter { it.score >= top - .035 }.random(Random(request.seed xor (request.slot * 7919))).plan.also { diagnostics.addAll(it.metadata.notes) }
     }
+
+    private fun usesNewInterpretation(plan: ReelPlan, normalized: String, pairings: List<ReelPairingHistory>) =
+        plan.clips.all { clip -> pairings.none { old -> old.normalizedText == normalized && old.sourceUri == clip.source.uri && old.sourceStartMs < clip.trimEndMs && old.sourceEndMs > clip.trimStartMs } }
+}
+
+object EmergencyText {
+    private val lines = mapOf(
+        ReelCategory.TRAVEL to listOf("A different view changes the day", "Keep the part that felt alive", "The long way can still be worth it", "One scene can change the whole story", "Save a little room for somewhere new", "Let the destination arrive slowly", "The best part was never on the schedule", "Take the memory, leave the rush"),
+        ReelCategory.MOTIVATION to listOf("Start before the mood arrives", "Quiet work still moves forward", "One honest repetition is progress", "Keep the promise you made yourself", "The result begins with the routine", "Small effort is still evidence", "Show up imperfectly and continue", "Progress does not need an audience"),
+        ReelCategory.LIFESTYLE to listOf("Keep the ordinary parts too", "A slower moment still counts", "Make room for the small good things", "The simple version worked today", "Not every memory needs an occasion", "A quiet routine can be enough", "This part of the day was mine", "Notice what usually passes by"),
+        ReelCategory.HUMOR to listOf("The confidence was slightly premature", "Technically there was a plan", "The idea survived longer than expected", "Experience was gained against my will", "Everything worked except the important part", "The instructions felt optional", "I would like to blame the lighting", "A professional would have noticed sooner")
+    )
+    fun candidates(category: ReelCategory, seed: Int) = lines.getValue(category).map { text ->
+        TextCandidate(listOf(text), category.label, "EXPANDED_EMERGENCY", tags = if (category == ReelCategory.MOTIVATION) "work|fitness" else "")
+    }.shuffled(Random(seed))
 }
