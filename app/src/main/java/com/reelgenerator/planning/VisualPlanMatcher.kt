@@ -32,7 +32,7 @@ class VisualPlanMatcher(private val policy: MatchPolicy = MatchPolicy()) {
                 val requiredWindow = if (intents.size > 1) durations[index] else minOf(1800L, durations[index])
                 if (section.endMs - section.startMs < requiredWindow) return@mapNotNull null
                 val paired = relevantPairings[source.uri].orEmpty().any { it.sourceStartMs < section.endMs && it.sourceEndMs > section.startMs }
-                Option(source, section, VisualScorer.score(intent, section, (counts[source.uri] ?: 0) + (usage[source.uri] ?: 0) * 2, paired, policy))
+                Option(source, section, VisualScorer.score(intent, section, counts[source.uri] ?: 0, paired, policy, usage[source.uri] ?: 0))
             } }
             options.filterNot { it.score.eligible }.sortedByDescending { it.score.overall }.take(2).forEach {
                 if (diagnostics.size < 40) diagnostics.add("Rejected beat=$index source=${it.source.id} range=${it.section.startMs}-${it.section.endMs} score=${it.score}")

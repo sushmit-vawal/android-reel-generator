@@ -47,7 +47,7 @@ data class BeatVisualIntent(
 data class MatchPolicy(
     val minimumSemanticMatch: Double = .50, val minimumVibeMatch: Double = .48,
     val minimumOverallVisualMatch: Double = .58, val minimumQuality: Double = .25,
-    val maximumReusePenalty: Double = .07
+    val maximumReusePenalty: Double = .15
 )
 data class VisualMatchScore(
     val semantic: Double, val concept: Double, val vibe: Double, val motion: Double,
@@ -114,13 +114,13 @@ object VisualVocabulary {
 }
 
 object VisualScorer {
-    fun score(intent: BeatVisualIntent, segment: ClipTemporalSegment, uses: Int, paired: Boolean, policy: MatchPolicy): VisualMatchScore {
+    fun score(intent: BeatVisualIntent, segment: ClipTemporalSegment, uses: Int, paired: Boolean, policy: MatchPolicy, batchUses: Int = 0): VisualMatchScore {
         val tags = VisualVocabulary.canonical(segment.semanticTags)
         val semantic = intent.subjects.maxOfOrNull { tags[it] ?: 0.0 } ?: 0.0
         val concept = if (intent.conceptSubjects.isEmpty()) semantic else intent.conceptSubjects.maxOf { tags[it] ?: 0.0 }
         val motion = (1.0 - abs(intent.desiredEnergy - segment.vibe.motion)).coerceIn(0.0, 1.0)
         val vibe = (1.0 - abs(intent.desiredEnergy - segment.vibe.energy)).coerceIn(0.0, 1.0)
-        val reuse = minOf(policy.maximumReusePenalty, uses.coerceAtLeast(0) * .012 + if (paired) .03 else 0.0)
+        val reuse = minOf(policy.maximumReusePenalty, uses.coerceAtLeast(0) * .008 + batchUses.coerceAtLeast(0) * .08 + if (paired) .03 else 0.0)
         val relevance = .57 * semantic + .05 * concept + .17 * vibe + .08 * motion + .08 * segment.quality + .05 * segment.crop.suitability
         val overall = relevance - reuse
         return VisualMatchScore(semantic, concept, vibe, motion, segment.quality, reuse, overall,
