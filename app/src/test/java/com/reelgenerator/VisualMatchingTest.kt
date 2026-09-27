@@ -28,7 +28,7 @@ class VisualMatchingTest {
         val a = VisualScorer.score(wanted, section("ocean"), 1000, true, MatchPolicy())
         val b = VisualScorer.score(wanted, section("ocean", confidence = .52), 0, false, MatchPolicy())
         val c = VisualScorer.score(wanted, section("office"), 0, false, MatchPolicy())
-        assertTrue(a.overall > b.overall); assertFalse(c.eligible); assertEquals(.07, a.reusePenalty, .0001)
+        assertTrue(a.overall > b.overall); assertFalse(c.eligible); assertEquals(.15, a.reusePenalty, .0001)
     }
     @Test fun calmTextRejectsFastMotionEvenWithCorrectSubject() {
         val wanted = intent("Slow down by the ocean")

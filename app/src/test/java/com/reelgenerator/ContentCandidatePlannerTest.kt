@@ -46,7 +46,8 @@ class ContentCandidatePlannerTest {
             val plan = planner.select(request(), listOf(excluded), listOf(video), emptyList(), emptyMap(), evidence())
             assertFalse(plan.metadata.notes.contains("contentItemId=item"))
         }
-        val plan = planner.select(request(), listOf(original), listOf(video), listOf("The ocean can wait!"), emptyMap(), evidence())
+        val pairing = ReelPairingHistory(clip.uri, TextIdentity.normalize("The ocean can wait!"), 0, clip.durationMs, "freedom", "old")
+        val plan = planner.select(request(), listOf(original), listOf(video), listOf("The ocean can wait!"), emptyMap(), evidence(), listOf(pairing))
         assertFalse(plan.metadata.notes.contains("contentItemId=item"))
     }
 
@@ -70,7 +71,7 @@ class ContentCandidatePlannerTest {
             db.close()
             db = Room.databaseBuilder(context, ReelDatabase::class.java, name).allowMainThreadQueries().build()
             assertEquals(1, db.dao().contentItems().single().useCount)
-            val next = ContentCandidatePlanner().select(request().copy(id = "next"), db.dao().contentItems(), listOf(video), db.dao().completedCaptions(), emptyMap(), evidence())
+            val next = ContentCandidatePlanner().select(request().copy(id = "next"), db.dao().contentItems(), listOf(video), db.dao().completedCaptions(), emptyMap(), evidence(), db.dao().recentPairings())
             assertFalse(next.metadata.notes.any { it.startsWith("contentItemId=") })
         } finally { db.close(); context.deleteDatabase(name) }
     }
