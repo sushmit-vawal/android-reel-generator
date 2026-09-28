@@ -106,10 +106,13 @@ class VisualMatchingTest {
         val source = clip(1); val evidence = mapOf(source.uri to analysis(source, section("ocean")))
         val items = (0 until 105).map { item(it, "Ocean moment $it") }
         val history = mutableListOf<String>()
+        val usedIds = mutableSetOf<String>()
         repeat(105) { i ->
-            val result = ContentCandidatePlanner().select(request(listOf(source)).copy(seed = i), items, emptyList(), history, emptyMap(), evidence)
+            val available = items.map { if (it.id in usedIds) it.copy(useCount = 1) else it }
+            val result = ContentCandidatePlanner().select(request(listOf(source)).copy(seed = i), available, emptyList(), history, emptyMap(), evidence)
             assertTrue(result.metadata.notes.contains("textSource=USER_CSV"))
             history.add(result.textBeats.single().text)
+            usedIds += result.metadata.notes.first { it.startsWith("contentItemId=") }.substringAfter('=')
         }
         assertEquals(105, history.toSet().size)
     }

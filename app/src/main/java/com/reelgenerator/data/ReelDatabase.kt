@@ -117,10 +117,15 @@ abstract class ReelDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun recordPairing(history: ReelPairingHistory)
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun addContent(item: ContentLibraryItem): Long
     @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun addImport(import: ContentImport)
-    @Query("SELECT * FROM ContentLibraryItem WHERE enabled=1 ORDER BY lastUsedAt, importedAt") abstract suspend fun contentItems(): List<ContentLibraryItem>
+    @Query("SELECT * FROM ContentLibraryItem WHERE enabled=1 ORDER BY importedAt") abstract suspend fun contentItems(): List<ContentLibraryItem>
+    @Query("SELECT * FROM ContentLibraryItem ORDER BY importedAt") abstract suspend fun allContentItems(): List<ContentLibraryItem>
     @Query("SELECT * FROM ContentImport ORDER BY importedAt DESC") abstract suspend fun imports(): List<ContentImport>
     @Query("SELECT caption FROM GeneratedReel WHERE outputUri IS NOT NULL") abstract suspend fun completedCaptions(): List<String>
-    @Query("UPDATE ContentLibraryItem SET useCount=useCount+1, lastUsedAt=:time WHERE id=:id") abstract suspend fun contentUsed(id: String, time: Long)
+    @Query("UPDATE ContentLibraryItem SET useCount=1, lastUsedAt=:time WHERE id=:id AND useCount<=0") abstract suspend fun contentUsed(id: String, time: Long)
+    @Query("UPDATE ContentLibraryItem SET useCount=-1 WHERE id=:id AND enabled=1 AND useCount=0") abstract suspend fun reserveContent(id: String): Int
+    @Query("UPDATE ContentLibraryItem SET useCount=0 WHERE id=:id AND useCount=-1") abstract suspend fun releaseContent(id: String)
+    @Query("UPDATE ContentLibraryItem SET useCount=0 WHERE useCount=-1") abstract suspend fun releaseStaleContentReservations()
+    @Query("UPDATE ContentLibraryItem SET useCount=0, lastUsedAt=0 WHERE useCount>0") abstract suspend fun resetUsedContent()
     @Query("SELECT * FROM ContentLibraryItem ORDER BY importedAt DESC") abstract fun observeContent(): Flow<List<ContentLibraryItem>>
     @Query("SELECT * FROM ContentImport ORDER BY importedAt DESC") abstract fun observeImports(): Flow<List<ContentImport>>
     @Query("UPDATE ContentLibraryItem SET enabled=:enabled WHERE id=:id") abstract suspend fun enableContent(id: String, enabled: Boolean)

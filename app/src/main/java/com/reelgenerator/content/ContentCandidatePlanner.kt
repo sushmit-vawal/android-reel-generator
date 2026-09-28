@@ -33,7 +33,7 @@ class ContentCandidatePlanner(private val generator: TextGenerator = TextGenerat
     suspend fun candidates(request: PlanningRequest, items: List<ContentLibraryItem>, videos: List<SourceVideo>, history: List<String>, batchUsage: Map<String, Int>,
                            analyses: Map<String, ClipAnalysis>, pairings: List<ReelPairingHistory>, limit: Int = 20): List<VisualPlanResult> {
         diagnostics.clear()
-        val library = items.filter { it.enabled && (it.category.equals(request.category.name, true) || it.category.equals("Uncategorized", true) || it.category.isBlank()) }
+        val library = items.filter { it.enabled && it.useCount == 0 && (it.category.equals(request.category.name, true) || it.category.equals("Uncategorized", true) || it.category.isBlank()) }
             .mapNotNull { item -> try {
                 val array = JSONArray(item.beatsJson)
                 TextCandidate((0 until array.length()).map(array::getString), item.subTheme.ifBlank { item.category }, item.sourceType, item.id, item.tags, item.preferredClipCount)
@@ -53,30 +53,15 @@ class ContentCandidatePlanner(private val generator: TextGenerator = TextGenerat
                     diagnostics += "rejectedUngrounded=${candidate.beats.joinToString(" | ")}"
                     return@forEach
                 }
-                if (historical && candidate.itemId != null && !usesNewInterpretation(result.plan, identity, pairings)) return@forEach
-                out += result.copy(score = result.score - sourcePenalty - if (historical) .06 else 0.0)
+                out += result.copy(score = result.score - sourcePenalty - if (historical && !allowHistorical) .06 else 0.0)
             }
             return out
         }
-        val freshImported = evaluate(library, false)
-        val reusedImported = evaluate(library, true).filter { result ->
-            result.plan.metadata.notes.any { it.startsWith("contentItemId=") } && freshImported.none { it.plan.textBeats.map(TextBeat::text) == result.plan.textBeats.map(TextBeat::text) }
-        }
-        val ai = try { generator.generate(request.category, request.humor, request.seed).filter { it.source == "AI_GENERATED" } }
-            catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { emptyList() }
-        val groups = listOf(
-            freshImported,
-            reusedImported,
-            evaluate(ai, false, .01),
-            evaluate(DynamicLocalTextGenerator.candidates(request.category, analyses.values, request.seed), false, .02),
-            evaluate(VideoFirstTemplates.candidates(request.category, analyses.values.toList()), false, .03),
-            evaluate(EmergencyText.candidates(request.category, request.seed), false, .05),
-            evaluate((0..4).map { TextCandidate(listOf(PhaseTwoText.caption(request.category, request.humor, it, request.seed)), request.category.label, "LEGACY_EMERGENCY") }, true, .09)
-        )
+        // Persistent ContentLibraryItem state is authoritative. A user-issued reset deliberately
+        // makes an imported row eligible again even though the completed reel remains in history.
+        val freshImported = evaluate(library, true)
+        val groups = listOf(freshImported)
         diagnostics += "candidateCounts=${groups.map { it.size }}"
-        // The pipeline order is intentional. A large tier bonus keeps a visually valid
-        // imported row ahead of generated material while relevance still ranks peers inside
-        // the same tier. Later tiers only fill the pool when earlier ones are insufficient.
         return groups.flatMapIndexed { tier, results ->
             results.sortedByDescending(VisualPlanResult::score).map { it.copy(score = it.score + (groups.size - tier) * 2.0) }
         }
@@ -86,13 +71,10 @@ class ContentCandidatePlanner(private val generator: TextGenerator = TextGenerat
     suspend fun select(request: PlanningRequest, items: List<ContentLibraryItem>, videos: List<SourceVideo>, history: List<String>, batchUsage: Map<String, Int>,
                        analyses: Map<String, ClipAnalysis> = emptyMap(), pairings: List<ReelPairingHistory> = emptyList()): ReelPlan {
         val plans = candidates(request, items, videos, history, batchUsage, analyses, pairings)
-        if (plans.isEmpty()) throw NoVisualMatchException("No readable visual/text plan fits ${analyses.size} indexed videos. The batch will continue with another source or local creative fallback.")
+        if (plans.isEmpty()) throw NoVisualMatchException("No unused matching CSV text is available. Import more text or reset used texts.")
         val top = plans.maxOf { it.score }
         return plans.filter { it.score >= top - .035 }.random(Random(request.seed xor (request.slot * 7919))).plan.also { diagnostics.addAll(it.metadata.notes) }
     }
-
-    private fun usesNewInterpretation(plan: ReelPlan, normalized: String, pairings: List<ReelPairingHistory>) =
-        plan.clips.all { clip -> pairings.none { old -> old.normalizedText == normalized && old.sourceUri == clip.source.uri && old.sourceStartMs < clip.trimEndMs && old.sourceEndMs > clip.trimStartMs } }
 
     private fun isVisuallyGrounded(candidate: TextCandidate, plan: ReelPlan, request: PlanningRequest, analyses: Map<String, ClipAnalysis>): Boolean {
         val literalSubjects = VisualVocabulary.intents(candidate.beats, candidate.tags, candidate.concept, request.category)

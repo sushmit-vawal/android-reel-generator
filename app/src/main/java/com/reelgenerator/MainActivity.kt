@@ -24,23 +24,20 @@ import androidx.media3.common.util.UnstableApi
 import java.text.DateFormat
 import java.util.Date
 import com.reelgenerator.data.ContentLibraryItem
-import androidx.work.*
-import com.reelgenerator.trend.TrendRefreshWorker
-import java.util.concurrent.TimeUnit
+import androidx.work.WorkManager
 
 @UnstableApi
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork("trend-refresh", ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<TrendRefreshWorker>(24, TimeUnit.HOURS).setConstraints(
-                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).setRequiresBatteryNotLow(true).build()
-            ).build())
+        // Cancel work persisted by builds that previously enabled TrendProvider refresh.
+        WorkManager.getInstance(this).cancelUniqueWork("trend-refresh")
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFBEF264), background = Color(0xFF101410), surface = Color(0xFF1C241C))) {
                 val model: ReelViewModel = viewModel()
                 var screen by rememberSaveable { mutableStateOf("home") }
                 var customPrompt by rememberSaveable { mutableStateOf("") }
+                var confirmResetUsed by rememberSaveable { mutableStateOf(false) }
                 var visibleContent by rememberSaveable { mutableIntStateOf(50) }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) model.addFolder(uri) }
                 val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) model.importContent(uri) }
@@ -107,10 +104,11 @@ class MainActivity : ComponentActivity() {
                                         TextButton(onClick = { model.deleteContentImport(imported.id) }, enabled = !model.busy) { Text("Delete import") }
                                     } }
                                 }
-                                Text("${model.contentItems.size} rows • ${model.contentItems.count { it.enabled && it.useCount == 0 }} enabled and not yet used")
+                                Text("Total content: ${model.contentItems.size} • Unused: ${model.contentItems.count { it.enabled && it.useCount == 0 }} • Used: ${model.contentItems.count { it.useCount > 0 }}")
+                                OutlinedButton(onClick = { confirmResetUsed = true }, enabled = !model.busy && model.contentItems.any { it.useCount > 0 }) { Text("Reset Used Texts") }
                                 model.contentItems.take(visibleContent).forEach { item ->
                                     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(item.rawText); Text("${item.category} • ${runCatching { org.json.JSONArray(item.beatsJson).length() }.getOrDefault(0)} beat(s) • used ${item.useCount} time(s)", style = MaterialTheme.typography.bodySmall)
+                                        Text(item.rawText); Text("${item.category} • ${runCatching { org.json.JSONArray(item.beatsJson).length() }.getOrDefault(0)} beat(s) • ${if (!item.enabled) "Disabled" else if (item.useCount > 0) "Used" else if (item.useCount < 0) "Reserved" else "Unused"}", style = MaterialTheme.typography.bodySmall)
                                         val rowBeats = item.rawText.split("||").map(String::trim)
                                         if (rowBeats.size > 6 || rowBeats.any { it.length > 180 } || rowBeats.sumOf { com.reelgenerator.planning.ReadingDuration.minimumMs(it) } + 700 > 20000)
                                             Text("Too long for one reel. Split into shorter CSV rows or beats (||).", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -157,6 +155,7 @@ class MainActivity : ComponentActivity() {
                         if (model.message.isNotBlank()) Text(model.message)
                     }
                 }
+                if (confirmResetUsed) AlertDialog(onDismissRequest = { confirmResetUsed = false }, title = { Text("Reset used texts?") }, text = { Text("Make all previously used text available again? Imported content, videos, and analysis remain unchanged.") }, confirmButton = { TextButton(onClick = { confirmResetUsed = false; model.resetUsedTexts() }) { Text("Reset") } }, dismissButton = { TextButton(onClick = { confirmResetUsed = false }) { Text("Cancel") } })
             }
         }
     }

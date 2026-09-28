@@ -57,10 +57,11 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
         val name = DocumentFile.fromSingleUri(getApplication(), uri)?.name ?: "content.csv"
         val csv = withContext(Dispatchers.IO) { resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read CSV.") }
         val summary = ContentLibraryRepository(dao).importCsv(name, csv)
-        message = "Imported ${summary.imported}; skipped ${summary.duplicates} duplicates; ${summary.invalid} invalid rows."
+        message = "Imported ${summary.imported} new unique texts; skipped ${summary.duplicates} duplicates, ${summary.previouslyUsed} previously used, and ${summary.invalid} invalid rows."
     }
     fun deleteContentImport(id: String) = manage { ContentLibraryRepository(dao).deleteImport(id) }
     fun enableContent(item: ContentLibraryItem, enabled: Boolean) = manage { dao.enableContent(item.id, enabled) }
+    fun resetUsedTexts() = manage { dao.resetUsedContent(); message = "Previously used text is available again." }
     private fun manage(block: suspend () -> Unit) {
         if (busy) return
         managing = true

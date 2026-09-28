@@ -31,14 +31,12 @@ class Phase3BFinalizationTest {
         assertEquals(5, selected.flatMap { it.plan.clips }.map { it.source.uri }.toSet().size)
     }
 
-    @Test fun exhaustedImportedTextContinuesWithUnboundedLocalCreativeCandidates() = runTest {
+    @Test fun exhaustedImportedTextDoesNotUseGeneratedOrLegacyFallbacks() = runTest {
         val (source, evidence) = clip(1)
         val request = PlanningRequest("dynamic", ReelCategory.TRAVEL, HumorStyle.AUTO, 0, 77, listOf(source))
         val oldLegacy = (0..4).map { PhaseTwoText.caption(ReelCategory.TRAVEL, HumorStyle.AUTO, it, 77) }
         val results = ContentCandidatePlanner().candidates(request, emptyList(), emptyList(), oldLegacy,
             emptyMap(), mapOf(source.uri to evidence), emptyList(), 20)
-        assertTrue(results.isNotEmpty())
-        assertTrue(results.first().plan.metadata.notes.contains("textSource=DYNAMIC_LOCAL"))
-        assertTrue(DynamicLocalTextGenerator.candidates(ReelCategory.TRAVEL, listOf(evidence), 1).size > 20)
+        assertTrue(results.isEmpty())
     }
 }

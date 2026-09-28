@@ -43,12 +43,9 @@ class ContentCandidatePlannerTest {
         val original = item(listOf("The ocean can wait."))
         val planner = ContentCandidatePlanner()
         for (excluded in listOf(original.copy(category = "Motivation"), original.copy(enabled = false), original.copy(tags = "", beatsJson = "[\"Airport check in.\"]", subTheme = "flight"))) {
-            val plan = planner.select(request(), listOf(excluded), listOf(video), emptyList(), emptyMap(), evidence())
-            assertFalse(plan.metadata.notes.contains("contentItemId=item"))
+            assertTrue(planner.candidates(request(), listOf(excluded), listOf(video), emptyList(), emptyMap(), evidence(), emptyList()).isEmpty())
         }
-        val pairing = ReelPairingHistory(clip.uri, TextIdentity.normalize("The ocean can wait!"), 0, clip.durationMs, "freedom", "old")
-        val plan = planner.select(request(), listOf(original), listOf(video), listOf("The ocean can wait!"), emptyMap(), evidence(), listOf(pairing))
-        assertFalse(plan.metadata.notes.contains("contentItemId=item"))
+        assertTrue(planner.candidates(request(), listOf(original.copy(useCount = 1)), listOf(video), listOf("The ocean can wait!"), emptyMap(), evidence(), emptyList()).isEmpty())
     }
 
     @Test fun importSelectPublishReopenPreventsReuseAndCountsExactlyOnce() = runTest {
@@ -59,7 +56,8 @@ class ContentCandidatePlannerTest {
         try {
             val repo = ContentLibraryRepository(db.dao())
             val csv = "category,text,tags\nTravel,\"The ocean can wait. || We have all afternoon.\",beach"
-            assertEquals(1, repo.importCsv("test.csv", csv).imported)
+            val firstImport = repo.importCsv("test.csv", csv)
+            assertEquals(1, firstImport.imported)
             assertEquals(1, repo.importCsv("test.csv", csv).duplicates)
             val plan = ContentCandidatePlanner().select(request(), db.dao().contentItems(), listOf(video), db.dao().completedCaptions(), emptyMap(), evidence())
             db.dao().addBatch(Batch("batch", "TRAVEL", "AUTO"))
@@ -71,21 +69,40 @@ class ContentCandidatePlannerTest {
             db.close()
             db = Room.databaseBuilder(context, ReelDatabase::class.java, name).allowMainThreadQueries().build()
             assertEquals(1, db.dao().contentItems().single().useCount)
-            val next = ContentCandidatePlanner().select(request().copy(id = "next"), db.dao().contentItems(), listOf(video), db.dao().completedCaptions(), emptyMap(), evidence(), db.dao().recentPairings())
-            assertFalse(next.metadata.notes.any { it.startsWith("contentItemId=") })
+            assertTrue(ContentCandidatePlanner().candidates(request().copy(id = "next"), db.dao().contentItems(), listOf(video), db.dao().completedCaptions(), emptyMap(), evidence(), db.dao().recentPairings()).isEmpty())
+            db.dao().resetUsedContent()
+            assertEquals(0, db.dao().contentItems().single().useCount)
+            assertTrue(ContentCandidatePlanner().candidates(request().copy(id = "reset"), db.dao().contentItems(), listOf(video), db.dao().completedCaptions(), emptyMap(), evidence(), db.dao().recentPairings()).isNotEmpty())
+            ContentLibraryRepository(db.dao()).deleteImport(firstImport.importId)
+            val reimport = ContentLibraryRepository(db.dao()).importCsv("different.csv", "category,text,tags\nTravel,\"The ocean can wait! || We have all afternoon\",beach")
+            assertEquals(0, reimport.imported)
+            assertEquals(1, reimport.previouslyUsed)
         } finally { db.close(); context.deleteDatabase(name) }
     }
 
     @Test fun modelProviderCandidatesParticipateWithoutBeingRelabeledFallback() = runTest {
         val planner = ContentCandidatePlanner(TextGenerator { _, _, _ -> listOf(TextCandidate(listOf("The ocean keeps its own schedule."), "freedom", "AI_GENERATED")) })
-        val plan = planner.select(request(), emptyList(), listOf(video), (0..4).map { PhaseTwoText.caption(ReelCategory.TRAVEL, HumorStyle.AUTO, it, 12) }, emptyMap(), evidence())
-        assertTrue(plan.metadata.notes.contains("textSource=AI_GENERATED"))
-        assertEquals("The ocean keeps its own schedule.", plan.textBeats.single().text)
+        assertTrue(planner.candidates(request(), emptyList(), listOf(video), emptyList(), emptyMap(), evidence(), emptyList()).isEmpty())
     }
 
     @Test fun insufficientFootageDoesNotFlattenOrTruncateScript() = runTest {
         val texts = List(6) { "The ocean gives us enough room to start again and take a slower afternoon." }
-        val plan = ContentCandidatePlanner().select(request(), listOf(item(texts)), listOf(video), emptyList(), emptyMap(), evidence())
-        assertFalse(plan.metadata.notes.contains("contentItemId=item"))
+        assertTrue(ContentCandidatePlanner().candidates(request(), listOf(item(texts)), listOf(video), emptyList(), emptyMap(), evidence(), emptyList()).isEmpty())
+    }
+
+    @Test fun reservationIsAtomicAndCancellationReturnsTextToAvailable() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, ReelDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            db.dao().addContent(item(listOf("The ocean can wait.")))
+            assertEquals(1, db.dao().reserveContent("item"))
+            assertEquals(-1, db.dao().contentItems().single().useCount)
+            assertEquals(0, db.dao().reserveContent("item"))
+            db.dao().releaseContent("item")
+            assertEquals(0, db.dao().contentItems().single().useCount)
+            assertEquals(1, db.dao().reserveContent("item"))
+            db.dao().releaseStaleContentReservations()
+            assertEquals(0, db.dao().contentItems().single().useCount)
+        } finally { db.close() }
     }
 }

@@ -15,7 +15,7 @@ data class ReelBrief(
     val requestedClipCount: Int? = null,
     val requestedDurationMs: Long? = null,
     val requestedTypographyPreset: TypographyPreset? = null,
-    val trendInfluenceEnabled: Boolean = true
+    val trendInfluenceEnabled: Boolean = false
 )
 
 object ReelBriefParser {
@@ -28,6 +28,6 @@ object ReelBriefParser {
         val text = exact?.split("||")?.map(String::trim)?.filter(String::isNotBlank).orEmpty()
         val mood = listOf("cinematic", "calm", "energetic", "funny", "emotional", "nostalgic", "dramatic", "minimal", "motivational").firstOrNull { it in lower } ?: "natural"
         val pacing = if ("slow" in lower || "calm" in lower) "calm" else if ("fast" in lower || "energetic" in lower) "quick" else "steady"
-        return ReelBrief(prompt, category, concepts, emptyList(), text, exact != null, concepts, mood, pacing, trendInfluenceEnabled = true)
+        return ReelBrief(prompt, category, concepts, emptyList(), text, exact != null, concepts, mood, pacing, trendInfluenceEnabled = false)
     }
 }

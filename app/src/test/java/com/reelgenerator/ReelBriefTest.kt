@@ -10,6 +10,7 @@ class ReelBriefTest {
         assertEquals(listOf("office", "laptop", "airport", "ocean"), brief.requestedVisualConcepts)
         assertEquals(listOf("Work first.", "Then travel."), brief.requestedText)
         assertTrue(brief.exactTextRequired); assertEquals("cinematic", brief.requestedMood)
+        assertFalse(brief.trendInfluenceEnabled)
     }
     @Test fun noTextPromptRemainsVideoFirstAndGeneratable() {
         val brief = ReelBriefParser.parse("Make a motivational reel using sunrise and beach workout clips")

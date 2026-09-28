@@ -9,17 +9,25 @@ import com.reelgenerator.content.TextCandidate
 import com.reelgenerator.data.*
 import com.reelgenerator.planning.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 
 @UnstableApi
 class CustomReelWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     private val dao = ReelDatabase.get(context).dao()
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = contentGenerationMutex.withLock {
+        dao.releaseStaleContentReservations()
+        generate()
+    }
+    private suspend fun generate(): Result {
         val prompt = inputData.getString("prompt")?.trim().orEmpty()
         if (prompt.isBlank()) return Result.failure(workDataOf("error" to "Describe the reel you want."))
         val brief = ReelBriefParser.parse(prompt)
         val batchId = id.toString()
         dao.addBatch(Batch(batchId, brief.requestedCategory.name, HumorStyle.AUTO.name, message = "Planning your custom reel…"))
         var index: LibraryVisualIndex? = null
+        var reservedContentId: String? = null
         try {
             FolderScanner(applicationContext, dao).scanAll { }
             val videos = dao.candidates()
@@ -39,13 +47,22 @@ class CustomReelWorker(context: Context, params: WorkerParameters) : CoroutineWo
                 ContentCandidatePlanner().select(request, dao.contentItems(), videos, dao.completedCaptions(), emptyMap(), index.analyses, dao.recentPairings())
             }.copy(version = 2, textStyle = PresentationPlanner.choose(brief.requestedCategory, prompt, batchId.hashCode()))
             plan.validated()
+            reservedContentId = plan.metadata.notes.firstOrNull { it.startsWith("contentItemId=") }?.substringAfter('=')
+            reservedContentId?.let { require(dao.reserveContent(it) == 1) { "That CSV text was already reserved or used. Try again." } }
             val reel = GeneratedReel(plan.id, batchId, 0, plan.clips.first().source.uri, plan.textBeats.joinToString("\n") { it.text }, planJson = ReelPlanCodec.encode(plan))
             dao.savePlannedReel(reel, plan.clips.mapIndexed { position, clip -> GeneratedReelSegment(reel.id, position, clip.source.uri, clip.trimStartMs, clip.trimEndMs, clip.outputStartMs) })
             ReelExporter(applicationContext).export(plan, onPublished = { output -> dao.completeReel(reel.copy(outputUri = output.toString())) }) { }
             dao.advanceBatch(batchId, "COMPLETE", "Custom reel created • saved to Movies/Upload Reels")
             return Result.success()
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (error: Exception) { dao.advanceBatch(batchId, "FAILED", error.localizedMessage ?: "Could not create custom reel."); return Result.failure(workDataOf("error" to (error.localizedMessage ?: "Custom reel failed"))) }
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) { reservedContentId?.let { dao.releaseContent(it) } }
+            throw cancelled
+        }
+        catch (error: Exception) {
+            reservedContentId?.let { dao.releaseContent(it) }
+            dao.advanceBatch(batchId, "FAILED", error.localizedMessage ?: "Could not create custom reel.")
+            return Result.failure(workDataOf("error" to (error.localizedMessage ?: "Custom reel failed")))
+        }
         finally { index?.close() }
     }
 }
