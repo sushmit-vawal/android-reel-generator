@@ -38,7 +38,7 @@ object ContentCsvParser {
         return CsvImportResult(valid, duplicates, invalid)
     }
 
-    fun normalize(text: String) = text.lowercase().replace(Regex("\\s+"), " ").trim()
+    fun normalize(text: String) = TextIdentity.normalize(text)
     fun hash(text: String): String = MessageDigest.getInstance("SHA-256").digest(normalize(text).toByteArray()).joinToString("") { "%02x".format(it) }
 
     private fun field(record: List<String>, header: List<String>, name: String) = record.getOrNull(header.indexOf(name).takeIf { it >= 0 } ?: -1)?.trim().orEmpty()

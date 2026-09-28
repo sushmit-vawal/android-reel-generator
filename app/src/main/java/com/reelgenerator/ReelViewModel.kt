@@ -57,10 +57,11 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
         val name = DocumentFile.fromSingleUri(getApplication(), uri)?.name ?: "content.csv"
         val csv = withContext(Dispatchers.IO) { resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read CSV.") }
         val summary = ContentLibraryRepository(dao).importCsv(name, csv)
-        message = "Imported ${summary.imported}; skipped ${summary.duplicates} duplicates; ${summary.invalid} invalid rows."
+        message = "Imported ${summary.imported} new unique texts; skipped ${summary.duplicates} duplicates, ${summary.previouslyUsed} previously used, and ${summary.invalid} invalid rows."
     }
     fun deleteContentImport(id: String) = manage { ContentLibraryRepository(dao).deleteImport(id) }
     fun enableContent(item: ContentLibraryItem, enabled: Boolean) = manage { dao.enableContent(item.id, enabled) }
+    fun resetUsedTexts() = manage { dao.resetUsedContent(); message = "Previously used text is available again." }
     private fun manage(block: suspend () -> Unit) {
         if (busy) return
         managing = true
@@ -114,6 +115,16 @@ class ReelViewModel(application: Application) : AndroidViewModel(application) {
                 work.enqueueUniqueWork(BatchWorker.WORK_NAME, ExistingWorkPolicy.KEEP, request).await()
                 workActive = work.getWorkInfosForUniqueWorkFlow(BatchWorker.WORK_NAME).first().any { !it.state.isFinished }
             } catch (error: Exception) { message = "Could not start generation. ${error.localizedMessage}" }
+            finally { scheduling = false }
+        }
+    }
+    fun generateCustom(prompt: String) {
+        if (busy || folders.none { it.enabled } || prompt.isBlank()) return
+        scheduling = true; message = ""
+        val request = OneTimeWorkRequestBuilder<CustomReelWorker>().setInputData(workDataOf("prompt" to prompt)).build()
+        viewModelScope.launch {
+            try { work.enqueueUniqueWork("custom-reel", ExistingWorkPolicy.REPLACE, request).await(); workActive = true }
+            catch (error: Exception) { message = "Could not start custom reel. ${error.localizedMessage}" }
             finally { scheduling = false }
         }
     }

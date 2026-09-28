@@ -6,7 +6,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.pm.ApplicationInfo
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.util.UnstableApi
 import androidx.work.*
@@ -18,11 +20,17 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+internal val contentGenerationMutex = Mutex()
+
 @UnstableApi
 class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     private val dao = ReelDatabase.get(context).dao()
     private val batchId = id.toString()
-    override suspend fun doWork(): Result = batchMutex.withLock { generateBatch() }
+    private val developmentBuild = applicationContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    override suspend fun doWork(): Result = contentGenerationMutex.withLock {
+        dao.releaseStaleContentReservations()
+        generateBatch()
+    }
 
     private suspend fun generateBatch(): Result {
         val category = ReelCategory.entries.find { it.name == inputData.getString("category") } ?: return Result.failure()
@@ -40,12 +48,28 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     dao.completeReel(pending.copy(outputUri = output.toString()))
                 }
             }
+            val availableText = dao.contentItems().any { item -> item.enabled && item.useCount == 0 &&
+                (item.category.equals(category.name, true) || item.category.equals("Uncategorized", true) || item.category.isBlank()) }
+            if (!availableText) {
+                val count = dao.reels(batchId).count { it.outputUri != null }
+                dao.advanceBatch(batchId, if (count > 0) "PARTIAL" else "FAILED",
+                    "$count of 5 reels created. No unused matching CSV text is available. Import more text or reset used texts in Content Library.")
+                return Result.success()
+            }
             val sourceVideos = dao.candidates()
             val index = LibraryVisualIndex(applicationContext, dao, sourceVideos).also { visualIndex = it }
             index.load(batchId.hashCode())
             // Every cached clip and every filename-indexed clip is immediately searchable. A
             // bounded page of new clips receives full visual analysis before set selection.
-            index.expand(progress = ::update)
+            // Build a broad high-confidence pool before planning. LibraryCoverage orders this
+            // round-robin across enabled folders, while cached unchanged analyses cost nothing.
+            val minimumAnalyzed = minOf(60, sourceVideos.size)
+            while (index.snapshot().analyzedVideos < minimumAnalyzed && index.remaining > 0) {
+                index.expand(12, ::update)
+            }
+            if (index.snapshot().analyzedVideos >= minimumAnalyzed && index.remaining > 0) {
+                index.expand(12, ::update)
+            }
             val sources = sourceVideos.map { it.uri }
             val saved = dao.reels(batchId).filter { it.outputUri != null }
             val usage = mutableMapOf<String, Int>()
@@ -148,11 +172,17 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     queues[slot] = ArrayDeque(candidatePool(slot))
                     continue
                 }
-                update("Rendering reel ${slot + 1} of 5…")
+                val contentId = candidate.plan.metadata.notes.firstOrNull { it.startsWith("contentItemId=") }?.substringAfter('=')
+                if (contentId == null) { errors += "Rejected a plan without authoritative CSV content."; continue }
+                val content = dao.contentItems().firstOrNull { it.id == contentId }
+                if (dao.reserveContent(contentId) == 0) { errors += "Skipped text already reserved or used."; continue }
+                if (developmentBuild) Log.d("ReelTextLifecycle", "reel=${slot + 1} contentId=$contentId textHash=${content?.normalizedHash} stateBefore=AVAILABLE importId=${content?.importId} previouslyUsed=false reserved=true")
                 try {
+                    update("Rendering reel ${slot + 1} of 5…")
                     render(slot, candidate.plan)
+                    if (developmentBuild) Log.d("ReelTextLifecycle", "reel=${slot + 1} contentId=$contentId renderSucceeded=true stateAfter=USED")
                     dao.reels(batchId).find { it.slot == slot }?.let { countUsage(it) }
-                } catch (cancelled: CancellationException) { throw cancelled }
+                } catch (cancelled: CancellationException) { withContext(NonCancellable) { dao.releaseContent(contentId) }; throw cancelled }
                 catch (error: Exception) {
                     val checkpoint = dao.reels(batchId).find { it.id == candidate.plan.id }
                     val published = ReelExporter(applicationContext).recover(category, candidate.plan.id)
@@ -160,6 +190,8 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                         dao.completeReel(checkpoint.copy(outputUri = published.toString()))
                         countUsage(checkpoint)
                     } else {
+                        dao.releaseContent(contentId)
+                        if (developmentBuild) Log.d("ReelTextLifecycle", "reel=${slot + 1} contentId=$contentId renderSucceeded=false stateAfter=AVAILABLE")
                         val failedSources = candidate.plan.clips.map { it.source.uri }.toSet()
                         unusable += failedSources
                         queues.values.forEach { queue -> queue.removeAll { reserve -> reserve.plan.clips.any { it.source.uri in failedSources } } }
@@ -174,7 +206,12 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             val message = when {
                 count == 5 -> "5 reels created • Saved to Movies/Upload Reels • ${snapshot.indexedVideos}/${snapshot.totalVideosDiscovered} searchable, ${snapshot.analyzedVideos} fully analyzed"
                 sources.isEmpty() -> "$count of 5 reels created. No accessible videos. Add or rescan a source folder."
+                dao.contentItems().none { it.enabled && it.useCount == 0 } -> "$count of 5 reels created. No unused CSV text remains. Import more text or reset used texts in Content Library."
                 else -> "$count of 5 reels created. ${detail ?: "No more usable source videos."}"
+            }
+            if (developmentBuild) {
+                val completed = dao.reels(batchId).filter { it.outputUri != null }
+                Log.d("ReelTextLifecycle", "requested=5 created=${completed.size} uniqueTextIdentities=${completed.map { com.reelgenerator.content.TextIdentity.normalize(it.caption) }.toSet().size} previouslyUsedSelected=0 trendProviderActive=false uniquePrimarySources=${completed.map { it.sourceUri }.toSet().size}")
             }
             dao.advanceBatch(batchId, if (count == 5) "COMPLETE" else "PARTIAL", message)
             return Result.success()
@@ -217,6 +254,5 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         private const val CHANNEL = "generation"
         // WorkManager cancellation changes scheduling state before GPU teardown finishes.
         // A new user-requested batch must wait for the previous worker's cleanup.
-        private val batchMutex = Mutex()
     }
 }

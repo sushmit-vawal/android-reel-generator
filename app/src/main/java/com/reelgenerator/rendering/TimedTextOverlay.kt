@@ -1,7 +1,6 @@
 package com.reelgenerator.rendering
 
 import android.graphics.*
-import android.text.Layout
 import android.text.TextPaint
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
@@ -25,23 +24,22 @@ class TimedTextOverlay(private val plan: ReelPlan) : BitmapOverlay() {
         return frame
     }
     private fun drawText(frame: Bitmap, beat: com.reelgenerator.planning.TextBeat) {
+        require(beat.text.isNotBlank() && beat.endMs > beat.startMs) { "Invalid text beat cannot be rendered." }
         val canvas = Canvas(frame)
         val fitted = TextLayoutEngine.fit(beat.text, plan.textStyle)
-        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = plan.textStyle.foregroundColor; textSize = fitted.sizePx
-            typeface = Typeface.create(plan.textStyle.typeface, Typeface.BOLD)
-            when (plan.textStyle.treatment) { com.reelgenerator.planning.TextTreatment.SHADOW, com.reelgenerator.planning.TextTreatment.DIRECT -> Unit
-                else -> setShadowLayer(5f, 0f, 3f, Color.BLACK) }
-        }
+        check(fitted.layout.width > 0 && fitted.layout.height > 0) { "Text layout is empty." }
+        val resolvedTypeface = Typeface.create(plan.textStyle.typeface.ifBlank { "sans-serif" }, Typeface.BOLD)
+            ?: Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         val top = fitted.bounds.top + (fitted.bounds.height() - fitted.layout.height) * plan.textStyle.placementY.coerceIn(0f, 1f)
         val left = fitted.bounds.left + (fitted.bounds.width() - fitted.layout.width) * plan.textStyle.placementX.coerceIn(0f, 1f)
-        val treatment = plan.textStyle.treatment
-        if (treatment == com.reelgenerator.planning.TextTreatment.BACKDROP || treatment == com.reelgenerator.planning.TextTreatment.GRADIENT) {
-            val inset = ExportPolicy.WIDTH * .018f
-            canvas.drawRoundRect(left - inset, top - inset, left + fitted.layout.width + inset, top + fitted.layout.height + inset, inset, inset,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(if (treatment == com.reelgenerator.planning.TextTreatment.GRADIENT) 90 else 115, 8, 12, 18) })
-        }
-        canvas.save(); canvas.translate(left, top); fitted.layout.paint.color = paint.color; fitted.layout.draw(canvas); canvas.restore()
+        check(left >= 0f && top >= 0f && left + fitted.layout.width <= frame.width && top + fitted.layout.height <= frame.height) { "Text is outside the video frame." }
+        canvas.save(); canvas.translate(left, top)
+        fitted.layout.paint.color = Color.WHITE
+        fitted.layout.paint.alpha = 255
+        fitted.layout.paint.typeface = resolvedTypeface
+        fitted.layout.paint.setShadowLayer(6f, 0f, 3f, Color.BLACK)
+        fitted.layout.draw(canvas)
+        canvas.restore()
     }
     override fun release() {
         try { super.release() } finally { bitmap?.recycle(); bitmap = null; lastIndex = Int.MIN_VALUE }

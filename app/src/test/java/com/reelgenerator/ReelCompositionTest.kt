@@ -52,4 +52,11 @@ class ReelCompositionTest {
         })
         overlay.release(); assertTrue(second.isRecycled)
     }
+    @Test fun firstFrameOfBeatDrawsOpaqueWhiteTextWithoutBackdropOnlyFrame() {
+        val overlay = TimedTextOverlay(plan().copy(textBeats = listOf(TextBeat("VISIBLE", 0, 2_000))))
+        val frame = overlay.getBitmap(0)
+        val pixels = IntArray(frame.width * frame.height); frame.getPixels(pixels, 0, frame.width, 0, 0, frame.width, frame.height)
+        assertTrue(pixels.any { it == Color.WHITE })
+        overlay.release()
+    }
 }

@@ -24,15 +24,20 @@ import androidx.media3.common.util.UnstableApi
 import java.text.DateFormat
 import java.util.Date
 import com.reelgenerator.data.ContentLibraryItem
+import androidx.work.WorkManager
 
 @UnstableApi
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Cancel work persisted by builds that previously enabled TrendProvider refresh.
+        WorkManager.getInstance(this).cancelUniqueWork("trend-refresh")
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFFBEF264), background = Color(0xFF101410), surface = Color(0xFF1C241C))) {
                 val model: ReelViewModel = viewModel()
                 var screen by rememberSaveable { mutableStateOf("home") }
+                var customPrompt by rememberSaveable { mutableStateOf("") }
+                var confirmResetUsed by rememberSaveable { mutableStateOf(false) }
                 var visibleContent by rememberSaveable { mutableIntStateOf(50) }
                 val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) model.addFolder(uri) }
                 val csvPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) model.importContent(uri) }
@@ -47,7 +52,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     Column(Modifier.safeDrawingPadding().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Spacer(Modifier.height(12.dp))
-                        Text(if (screen == "folders") "SOURCE FOLDERS" else if (screen == "reels") "YOUR REELS" else if (screen == "content") "CONTENT LIBRARY" else "REEL GENERATOR", style = MaterialTheme.typography.headlineLarge)
+                        Text(if (screen == "folders") "SOURCE FOLDERS" else if (screen == "reels") "YOUR REELS" else if (screen == "content") "CONTENT LIBRARY" else if (screen == "custom") "CUSTOM REEL" else "REEL GENERATOR", style = MaterialTheme.typography.headlineLarge)
                         if (screen != "home") TextButton(onClick = { screen = "home" }) { Text("Back") }
                         when (screen) {
                             "folders" -> {
@@ -99,10 +104,11 @@ class MainActivity : ComponentActivity() {
                                         TextButton(onClick = { model.deleteContentImport(imported.id) }, enabled = !model.busy) { Text("Delete import") }
                                     } }
                                 }
-                                Text("${model.contentItems.size} rows • ${model.contentItems.count { it.enabled && it.useCount == 0 }} enabled and not yet used")
+                                Text("Total content: ${model.contentItems.size} • Unused: ${model.contentItems.count { it.enabled && it.useCount == 0 }} • Used: ${model.contentItems.count { it.useCount > 0 }}")
+                                OutlinedButton(onClick = { confirmResetUsed = true }, enabled = !model.busy && model.contentItems.any { it.useCount > 0 }) { Text("Reset Used Texts") }
                                 model.contentItems.take(visibleContent).forEach { item ->
                                     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(item.rawText); Text("${item.category} • ${runCatching { org.json.JSONArray(item.beatsJson).length() }.getOrDefault(0)} beat(s) • used ${item.useCount} time(s)", style = MaterialTheme.typography.bodySmall)
+                                        Text(item.rawText); Text("${item.category} • ${runCatching { org.json.JSONArray(item.beatsJson).length() }.getOrDefault(0)} beat(s) • ${if (!item.enabled) "Disabled" else if (item.useCount > 0) "Used" else if (item.useCount < 0) "Reserved" else "Unused"}", style = MaterialTheme.typography.bodySmall)
                                         val rowBeats = item.rawText.split("||").map(String::trim)
                                         if (rowBeats.size > 6 || rowBeats.any { it.length > 180 } || rowBeats.sumOf { com.reelgenerator.planning.ReadingDuration.minimumMs(it) } + 700 > 20000)
                                             Text("Too long for one reel. Split into shorter CSV rows or beats (||).", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -111,6 +117,12 @@ class MainActivity : ComponentActivity() {
                                 }
                                 if (visibleContent < model.contentItems.size) TextButton(onClick = { visibleContent += 50 }) { Text("Show more rows") }
                             }
+                            "custom" -> {
+                                Text("Describe the reel you want. Mention visual order, mood, pacing, or exact text with || between beats.")
+                                OutlinedTextField(value = customPrompt, onValueChange = { customPrompt = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp), label = { Text("Describe the reel you want") }, placeholder = { Text("Start with office clips, then airport and ocean. Make it cinematic.") })
+                                Button(onClick = { model.generateCustom(customPrompt); screen = "home" }, enabled = !model.busy && customPrompt.isNotBlank() && model.folders.any { it.enabled }, modifier = Modifier.fillMaxWidth().height(58.dp)) { Text("CREATE CUSTOM REEL") }
+                                Text("CSV is optional. Exact text is preserved; visual-only prompts receive original text matched to your footage.", style = MaterialTheme.typography.bodySmall)
+                            }
                             else -> {
                                 Text("Your videos. Five moments to share.", style = MaterialTheme.typography.bodyLarge)
                                 Text("SOURCE FOLDERS", style = MaterialTheme.typography.labelLarge)
@@ -118,6 +130,7 @@ class MainActivity : ComponentActivity() {
                                 else model.folders.forEach { Text("${it.name}${if (it.enabled) "" else " (disabled)"}") }
                                 OutlinedButton(onClick = { screen = "folders" }, modifier = Modifier.fillMaxWidth()) { Text("Select / Manage Folders") }
                                 OutlinedButton(onClick = { screen = "content" }, modifier = Modifier.fillMaxWidth()) { Text("Content Library") }
+                                OutlinedButton(onClick = { screen = "custom" }, enabled = !model.busy, modifier = Modifier.fillMaxWidth()) { Text("Custom Reel") }
                                 Text("REEL TYPE", style = MaterialTheme.typography.labelLarge)
                                 Choice(model.category.label, ReelCategory.entries.map { it.label }, !model.busy) { label -> model.choose(ReelCategory.entries.first { it.label == label }) }
                                 if (model.category == ReelCategory.HUMOR) {
@@ -142,6 +155,7 @@ class MainActivity : ComponentActivity() {
                         if (model.message.isNotBlank()) Text(model.message)
                     }
                 }
+                if (confirmResetUsed) AlertDialog(onDismissRequest = { confirmResetUsed = false }, title = { Text("Reset used texts?") }, text = { Text("Make all previously used text available again? Imported content, videos, and analysis remain unchanged.") }, confirmButton = { TextButton(onClick = { confirmResetUsed = false; model.resetUsedTexts() }) { Text("Reset") } }, dismissButton = { TextButton(onClick = { confirmResetUsed = false }) { Text("Cancel") } })
             }
         }
     }
