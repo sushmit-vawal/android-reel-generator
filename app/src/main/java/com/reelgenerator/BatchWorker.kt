@@ -45,7 +45,12 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             index.load(batchId.hashCode())
             // Every cached clip and every filename-indexed clip is immediately searchable. A
             // bounded page of new clips receives full visual analysis before set selection.
-            index.expand(progress = ::update)
+            // Build a broad high-confidence pool before planning. LibraryCoverage orders this
+            // round-robin across enabled folders, while cached unchanged analyses cost nothing.
+            val minimumAnalyzed = minOf(60, sourceVideos.size)
+            while (index.snapshot().analyzedVideos < minimumAnalyzed && index.remaining > 0) {
+                index.expand(12, ::update)
+            }
             val sources = sourceVideos.map { it.uri }
             val saved = dao.reels(batchId).filter { it.outputUri != null }
             val usage = mutableMapOf<String, Int>()

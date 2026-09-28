@@ -49,6 +49,10 @@ class ContentCandidatePlanner(private val generator: TextGenerator = TextGenerat
                 val historical = identity in normalizedHistory || history.any { TextIdentity.similarity(text, it) >= .96 }
                 if (historical && !allowHistorical) return@forEach
                 val result = matcher.match(request, candidate, analyses, videos, batchUsage, pairings, diagnostics) ?: return@forEach
+                if (!isVisuallyGrounded(candidate, result.plan, request, analyses)) {
+                    diagnostics += "rejectedUngrounded=${candidate.beats.joinToString(" | ")}"
+                    return@forEach
+                }
                 if (historical && candidate.itemId != null && !usesNewInterpretation(result.plan, identity, pairings)) return@forEach
                 out += result.copy(score = result.score - sourcePenalty - if (historical) .06 else 0.0)
             }
@@ -89,6 +93,15 @@ class ContentCandidatePlanner(private val generator: TextGenerator = TextGenerat
 
     private fun usesNewInterpretation(plan: ReelPlan, normalized: String, pairings: List<ReelPairingHistory>) =
         plan.clips.all { clip -> pairings.none { old -> old.normalizedText == normalized && old.sourceUri == clip.source.uri && old.sourceStartMs < clip.trimEndMs && old.sourceEndMs > clip.trimStartMs } }
+
+    private fun isVisuallyGrounded(candidate: TextCandidate, plan: ReelPlan, request: PlanningRequest, analyses: Map<String, ClipAnalysis>): Boolean {
+        val literalSubjects = VisualVocabulary.intents(candidate.beats, candidate.tags, candidate.concept, request.category)
+            .flatMap { it.subjects }.toSet()
+        if (literalSubjects.isEmpty()) return true
+        val observed = plan.clips.flatMap { clip -> analyses[clip.source.uri]?.temporalSegments.orEmpty() }
+            .flatMap { VisualVocabulary.canonical(it.semanticTags).filterValues { confidence -> confidence >= .45 }.keys }.toSet()
+        return literalSubjects.any { it in observed }
+    }
 }
 
 object EmergencyText {
