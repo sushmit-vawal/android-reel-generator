@@ -81,6 +81,8 @@ data class ReelPlan(
             previousEnd = it.endMs
         }
         require(textStyle.fontSizePx.isFinite() && textStyle.fontSizePx in 40f..80f) { "Invalid text size." }
+        require(textStyle.foregroundColor == 0xffffffff.toInt()) { "Generated reel foreground text must be white." }
+        require(textStyle.placementX in 0f..1f && textStyle.placementY in 0f..1f) { "Text placement is outside the safe area." }
         require(qualityScore == null || (qualityScore.isFinite() && qualityScore in 0.0..1.0)) { "Invalid quality score." }
     }
 }
