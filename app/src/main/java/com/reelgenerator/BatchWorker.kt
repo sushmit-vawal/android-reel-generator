@@ -51,6 +51,9 @@ class BatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             while (index.snapshot().analyzedVideos < minimumAnalyzed && index.remaining > 0) {
                 index.expand(12, ::update)
             }
+            if (index.snapshot().analyzedVideos >= minimumAnalyzed && index.remaining > 0) {
+                index.expand(12, ::update)
+            }
             val sources = sourceVideos.map { it.uri }
             val saved = dao.reels(batchId).filter { it.outputUri != null }
             val usage = mutableMapOf<String, Int>()
