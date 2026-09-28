@@ -39,8 +39,11 @@ class ReelExportDeviceTest {
     @After fun removeTestGalleryEntries() { published.forEach { context.contentResolver.delete(it, null, null) } }
 
     @Test fun bundledVisualModelAnalyzesMultipleFramesWithoutInternetPermission() = runBlocking {
-        assertEquals(android.content.pm.PackageManager.PERMISSION_DENIED,
-            context.checkSelfPermission(android.Manifest.permission.INTERNET))
+        val requestedPermissions = context.packageManager
+            .getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+            .requestedPermissions.orEmpty().toSet()
+        assertFalse(android.Manifest.permission.INTERNET in requestedPermissions)
+        assertFalse(android.Manifest.permission.ACCESS_NETWORK_STATE in requestedPermissions)
         val video = SourceVideo(red.uri, "fixture.mp4", 1, 1)
         val analysis = com.reelgenerator.analysis.VisualClipAnalyzer(context).use { analyzer ->
             withTimeout(90000) { analyzer.analyze(red, video) }
